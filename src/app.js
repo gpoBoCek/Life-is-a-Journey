@@ -875,6 +875,15 @@ const SUPPRESS_MODES = {
   still: { label: 'STILLNESS', durs: [2, 5, 10, 15, 20], def: 5 },
   burst: { label: 'A SHORT BURST', durs: [5, 10, 15, 20, 25], def: 10 }
 };
+const PROMO_ART = String.raw`
+        *
+       /^\
+      / @ \
+     <=====>
+      \   /
+       \ /
+        V
+`;
 const MANA_ART = String.raw`
       .   *   .
    *    .-'-.    *
@@ -950,25 +959,53 @@ const MANA_PARTS = [
   ['leagues', 'Days on the road', 1], ['cast', 'Rituals cast', 1], ['errand', 'Errands done', 1],
   ['peek', 'Chests opened', 5], ['floor', 'Delve floors cleared', 5], ['prophecy', 'Prophecies judged', 3],
   ['dispel', 'Hexes broken', 3], ['hex_revisit', 'Hexes revisited', 2], ['review', 'Worries reviewed', 2], ['steady', 'Steadying sessions', 2],
-  ['minutes', 'Minutes of suppression', 1], ['steps', 'Steps walked, per 1,000', 1]
+  ['sup10', 'Suppression, per 10 minutes', 1], ['steps', 'Steps walked, per 1,000', 1]
 ];
+// Bumped whenever the way mana is counted changes, so a release is only compared with releases counted the same way.
+const MANA_RULES = 2;
+
+/* Mage classes. Thresholds follow how rare each class is: a class held by ten times fewer mages takes about ten times
+   the mana. Known counts: 9th class about 2,000 mages, 5th about 600, 1st 51, Great Mages 4. The classes between are
+   spaced evenly in rarity. Calibrated so that a steady day (about 12 mana) reaches 5th class in about three months
+   and 1st class in under three years. A Great Mage, by the same rule, would take 12.75 times the 1st class, about
+   40 years; that last step is shortened to the square root of its rarity (3.57 times), roughly ten years. */
+const MAGE_CLASSES = [
+  { at: 300, name: '9TH-CLASS MAGE', line: 'An apprentice with a class to your name. Most who start never get this far.' },
+  { at: 400, name: '8TH-CLASS MAGE', line: 'Still an apprentice, with fewer beside you now.' },
+  { at: 550, name: '7TH-CLASS MAGE', line: 'Halfway through the apprentice years.' },
+  { at: 750, name: '6TH-CLASS MAGE', line: 'The last of the apprentice classes.' },
+  { at: 1000, name: '5TH-CLASS MAGE', line: 'A full mage. The first class that is not an apprenticeship.' },
+  { at: 1850, name: '4TH-CLASS MAGE', line: 'Little is said about this class. Those who hold it are plainly better than the 5th.' },
+  { at: 3400, name: '3RD-CLASS MAGE', line: 'High rank. Few travellers ever meet one.' },
+  { at: 6400, name: '2ND-CLASS MAGE', line: 'One step below the highest class that can be granted.' },
+  { at: 11800, name: '1ST-CLASS MAGE', line: 'The highest class that can be formally granted. Only a few dozen hold it.' },
+  { at: 42000, name: 'GREAT MAGE', line: 'Not a class. A title the world gives, held by a handful in all of history.' }
+];
+function mageClassIndex(total) { let i = -1; MAGE_CLASSES.forEach((c, k) => { if (total >= c.at) i = k; }); return i; }
+function mageClassName(i) { return i >= 0 ? MAGE_CLASSES[i].name : 'NO CLASS YET'; }
+function classLine() {
+  const i = S.mana && S.mana.rank != null ? S.mana.rank : -1;
+  return '<p class="small">Your class: ' + mageClassName(i).toLowerCase() + '.' + (i < MAGE_CLASSES.length - 1 ? ' Classes are assessed at each release.' : '') + '</p>';
+}
 function manaSnapshot() {
   const stormy = new Set(Object.keys(S.days).filter((k) => S.days[k].w >= 3));
-  const counts = { leagues: leagues(), cast: 0, errand: 0, peek: 0, floor: 0, prophecy: 0, dispel: 0, hex_revisit: 0, review: 0, steady: 0, minutes: 0, steps: 0 };
-  let bonus = 0, supSec = 0, steps = 0;
+  const counts = { leagues: leagues(), cast: 0, errand: 0, peek: 0, floor: 0, prophecy: 0, dispel: 0, hex_revisit: 0, review: 0, steady: 0, sup10: 0, steps: 0 };
+  let bonus = 0, supSec = 0, stormSupSec = 0, steps = 0;
   const deedDays = new Set();
   S.events.forEach((e) => {
     if (MANA_WEIGHTS[e.k] != null) { counts[e.k]++; deedDays.add(e.d); if (stormy.has(e.d)) bonus += MANA_WEIGHTS[e.k]; }
-    if (e.k === 'suppress') { supSec += e.sec || 0; deedDays.add(e.d); if (stormy.has(e.d)) bonus += Math.floor((e.sec || 0) / 60); }
+    // Suppression: one mana for every 10 minutes actually spent (never more than the time picked).
+    if (e.k === 'suppress') { supSec += e.sec || 0; deedDays.add(e.d); if (stormy.has(e.d)) stormSupSec += e.sec || 0; }
   });
+  bonus += Math.floor(stormSupSec / 600);
   Object.keys(S.days).forEach((k) => { const s = S.days[k].s; if (s > 0) steps += s; });
-  counts.minutes = Math.floor(supSec / 60);
+  counts.sup10 = Math.floor(supSec / 600);
   counts.steps = Math.floor(steps / 1000);
   let total = bonus;
   MANA_PARTS.forEach((pt) => { total += counts[pt[0]] * pt[2]; });
   const stormDays = stormy.size;
   const stormActive = [...stormy].filter((k) => deedDays.has(k)).length;
-  return { t: Date.now(), total: total, counts: counts, bonus: bonus, stormDays: stormDays, stormActive: stormActive };
+  return { t: Date.now(), rules: MANA_RULES, total: total, counts: counts, bonus: bonus, stormDays: stormDays, stormActive: stormActive };
 }
 function manaState() {
   const M = S.mana || (S.mana = { at: null, snaps: [] });
@@ -992,29 +1029,40 @@ function renderMana() {
   if (ms.state === 'sealed') {
     return win('MANA', '<pre class="art center" aria-hidden="true">' + esc(MANA_ART.replace(/^\n/, '')) + '</pre>' +
       '<p class="nomargin">' + (ms.first ? 'Your mana is suppressed. It gathers from everything you do, and it cannot be seen yet.' : 'Your mana is sealed again. It keeps gathering while it is hidden.') + '</p>' +
-      '<p class="dim small">It can be released ' + untilText(ms.opensAt) + '.</p>');
+      '<p class="dim small">It can be released ' + untilText(ms.opensAt) + '.</p>' + classLine());
   }
   if (ms.state === 'ready') {
     return win('MANA', '<pre class="art fg center" aria-hidden="true">' + esc(MANA_ART.replace(/^\n/, '')) + '</pre>' +
       '<p class="nomargin">The seal has weakened. Your mana can be released.</p>' +
-      '<p class="dim small">Once released, it stays visible for 24 hours, then seals itself for at least 7 days. There is no hurry.</p>' +
+      '<p class="dim small">Once released, it stays visible for 24 hours, then seals itself for at least 7 days. There is no hurry.</p>' + classLine() +
       '<button class="btn wide holdbtn" data-hold="releaseMana" data-a="holdKey">' + '<span class="holdfill" aria-hidden="true"></span><span class="holdlbl">' + (UI.confirm === 'hold' ? 'PRESS AGAIN TO RELEASE' : 'HOLD TO RELEASE') + '</span></button>');
   }
   // open: show live figures against the previous release
   const live = manaSnapshot();
-  const base = M.snaps.length >= 2 ? M.snaps[M.snaps.length - 2] : null;
+  const prev = M.snaps.length >= 2 ? M.snaps[M.snaps.length - 2] : null;
+  const base = prev && prev.rules === MANA_RULES ? prev : null;
   const bc = base ? base.counts : {};
+  const last = M.snaps[M.snaps.length - 1] || {};
+  const ci = M.rank != null ? M.rank : -1;
   let h = '<p class="sub top">RELEASED · SEALS AGAIN ' + untilText(ms.closesAt).toUpperCase() + '</p>' +
     '<div class="leagues"><span class="bignum">' + fmtNum(live.total) + '</span><span>MANA</span></div>' +
-    '<p>' + (base ? signed(live.total - base.total) + ' since your last release, ' + plural(Math.max(1, Math.round((M.at - base.t) / DAY_MS)), 'day') + ' earlier.' : 'Your first release. All of this was gathered since day one.') + '</p>';
+    '<p>' + (base ? signed(live.total - base.total) + ' since your last release, ' + plural(Math.max(1, Math.round((M.at - base.t) / DAY_MS)), 'day') + ' earlier.' : prev ? 'Mana is counted differently since your last release, so this release starts a fresh comparison.' : 'Your first release. All of this was gathered since day one.') + '</p>';
+  h += '<p class="lbl">YOUR CLASS</p><p class="bigline nomargin">' + mageClassName(ci) + '</p>' +
+    (last.promo ? '<p class="small">Promoted at this release' + (last.promo.length > 1 ? ', through ' + last.promo.length + ' classes at once' : '') + '. ' + esc(MAGE_CLASSES[ci].line) + '</p>' : ci >= 0 ? '<p class="dim small">' + esc(MAGE_CLASSES[ci].line) + '</p>' : '') +
+    (ci + 1 < MAGE_CLASSES.length ? '<p class="small">Next: ' + MAGE_CLASSES[ci + 1].name.toLowerCase() + ' at ' + fmtNum(MAGE_CLASSES[ci + 1].at) + ' mana. ' + fmtNum(Math.max(0, MAGE_CLASSES[ci + 1].at - live.total)) + ' to go.' + (live.total >= MAGE_CLASSES[ci + 1].at ? ' You will be assessed at your next release.' : '') + '</p>' : '');
   h += '<p class="lbl">WHAT IT IS MADE OF</p>' + MANA_PARTS.map((pt) => {
     const c = live.counts[pt[0]], d = c - (bc[pt[0]] || 0);
     return '<div class="row tight manarow"><span class="grow">' + pt[1] + (pt[2] > 1 ? ' <span class="dim">x' + pt[2] + '</span>' : '') + '</span><span class="meta">' + fmtNum(c) + (base && d ? ' (' + signed(d) + ')' : '') + '</span><span class="manav">' + fmtNum(c * pt[2]) + '</span></div>';
   }).join('') +
     '<div class="row tight manarow"><span class="grow">Deeds on rainy or stormy days, counted twice</span><span class="meta">' + (base && live.bonus - base.bonus ? '(' + signed(live.bonus - base.bonus) + ')' : '') + '</span><span class="manav">' + fmtNum(live.bonus) + '</span></div>';
   if (live.stormDays) h += '<p class="small">On ' + plural(live.stormDays, 'day') + ' your weather was RAIN or STORM. On ' + live.stormActive + ' of them you still did something.</p>';
-  if (M.snaps.length >= 2) {
-    const tots = M.snaps.map((x) => x.total);
+  h += '<p class="lbl">THE CLASSES</p>' + MAGE_CLASSES.slice().reverse().map((c, j) => {
+    const k = MAGE_CLASSES.length - 1 - j;
+    return '<div class="row tight"><span class="mark">' + (k <= ci ? '[x]' : '[ ]') + '</span><span class="grow' + (k === ci ? '' : ' dim') + '">' + c.name.toLowerCase() + '</span><span class="meta">' + fmtNum(c.at) + '</span></div>';
+  }).join('') + '<p class="dim small">A class is granted only at a release, like an examination. It is never taken away.</p>';
+  const same = M.snaps.filter((x) => x.rules === MANA_RULES);
+  if (same.length >= 2) {
+    const tots = same.map((x) => x.total);
     tots[tots.length - 1] = live.total;
     const mx = Math.max(...tots, 1);
     h += '<p class="lbl">AT EACH RELEASE</p><div class="bars" role="img" aria-label="Mana at each release: ' + tots.join(', ') + '">' + tots.map((v, i) => '<span class="' + (i === tots.length - 1 ? 'hi' : '') + '" style="height:' + Math.max(2, Math.round((v / mx) * 64)) + 'px"></span>').join('') + '</div><div class="axis dim small"><span>first release</span><span>now</span></div>';
@@ -1574,7 +1622,7 @@ VIEWS.suppress = function (v) {
   }
   if (v.phase === 'done') {
     const rec = S.suppressions.find((x) => x.id === v.rec);
-    return backRow() + win('SUPPRESS', '<p class="nomargin">' + (rec ? cap(minutesText(rec.spent)) + ' flowed into your mana.' : 'Done.') + '</p><p class="dim small">It stays hidden until the next release.</p><div class="btns"><button class="btn" data-a="supAgain">AGAIN</button><button class="btn" data-a="back">BACK</button></div>');
+    return backRow() + win('SUPPRESS', '<p class="nomargin">' + (rec ? cap(minutesText(rec.spent)) + ' on the record. Every 10 minutes of suppression adds one to your mana.' : 'Done.') + '</p><p class="dim small">It stays hidden until the next release.</p><div class="btns"><button class="btn" data-a="supAgain">AGAIN</button><button class="btn" data-a="back">BACK</button></div>');
   }
   const mode = fval('su-mode', 'urge');
   const M = SUPPRESS_MODES[mode];
@@ -1596,7 +1644,7 @@ VIEWS.suppress = function (v) {
   body += '<p class="lbl">For how long?</p><div class="seg" role="group" aria-label="Minutes">' + M.durs.map((d) => '<button class="segb' + (dur === d ? ' on' : '') + '" data-a="setForm" data-k="su-dur" data-v="' + d + '" aria-pressed="' + (dur === d) + '">' + d + ' MIN</button>').join('') + '</div>' +
     '<button class="btn solid wide" data-a="supBegin">BEGIN</button>';
   let h = backRow();
-  h += '<p class="dim">Hold back an urge, quiet the mind, or give a short, bounded burst to something that needs doing. Every minute flows into your mana.</p>';
+  h += '<p class="dim">Hold back an urge, quiet the mind, or give a short, bounded burst to something that needs doing. Every 10 minutes add one to your mana.</p>';
   h += win('SUPPRESS', body);
   const recent = S.suppressions.slice().reverse().slice(0, 20);
   if (recent.length) {
@@ -2061,6 +2109,9 @@ function renderModal() {
     body = win('IMPORT BACKUP', '<p>This backup is from ' + fmtDate(dkey(new Date(m.data.savedAt || Date.now()))) + ' and holds ' + plural(m.data.errands.length, 'errand') + ', ' + plural(m.data.rituals.length, 'ritual') + ' and ' + plural(Object.keys(m.data.days).length, 'logged day') + '.</p><p>Importing replaces everything in the app now.</p><div class="btns"><button class="btn solid" data-a="importConfirm">REPLACE</button><button class="btn" data-a="closeModal">CANCEL</button></div>');
   } else if (m.type === 'exportText') {
     body = win('BACKUP', '<p class="small">Saving a file is not available here. Copy this text and keep it somewhere safe; IMPORT BACKUP accepts it as a .json file.</p><textarea id="m-json" rows="8" readonly>' + esc(m.json) + '</textarea><div class="btns"><button class="btn solid" data-a="copyJson">COPY</button><button class="btn" data-a="closeModal">CLOSE</button></div>');
+  } else if (m.type === 'promotion') {
+    const c = MAGE_CLASSES[m.rank];
+    body = win('PROMOTION', '<pre class="art fg center" aria-hidden="true">' + esc(PROMO_ART.replace(/^\n/, '').replace(/\n$/, '')) + '</pre><p class="sub top center">' + (m.count > 1 ? 'ASSESSED THROUGH ' + m.count + ' CLASSES' : 'YOU ARE NOW') + '</p><p class="bigline center">' + c.name + '</p><p>' + esc(c.line) + '</p><button class="btn solid wide" data-a="closeModal">CONTINUE</button>', 'r-l');
   } else if (m.type === 'message') {
     body = win(m.title, '<p>' + esc(m.text) + '</p><button class="btn solid wide" data-a="closeModal">OK</button>');
   }
@@ -2492,7 +2543,18 @@ A.supAgain = () => { const v = topView(); v.phase = null; v.rec = null; UI.form 
 A.releaseMana = () => {
   if (manaState().state !== 'ready') return;
   S.mana.at = Date.now();
-  S.mana.snaps.push(manaSnapshot());
+  const snap = manaSnapshot();
+  // The assessment: classes are granted only here, and never taken away.
+  const before = S.mana.rank != null ? S.mana.rank : -1;
+  const now = Math.max(before, mageClassIndex(snap.total));
+  if (now > before) {
+    snap.promo = [];
+    for (let k = before + 1; k <= now; k++) snap.promo.push(k);
+    S.mana.rank = now;
+    say('Promotion: you are now a ' + MAGE_CLASSES[now].name.toLowerCase() + '.');
+    UI.modals.push({ type: 'promotion', rank: now, count: snap.promo.length });
+  }
+  S.mana.snaps.push(snap);
   UI.confirm = null;
   say('You release your mana. For one day, it can be seen.');
   buzz();

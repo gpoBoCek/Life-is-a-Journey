@@ -38,7 +38,7 @@ with sync_playwright() as p:
     click(page, '[data-a=setForm][data-k="su-after"][data-v="2"]')
     page.screenshot(path=SH + '41_suppress_after.png')
     click(page, '[data-a=supFinish][data-v=held]'); closeModals(page)
-    expect(page, 'flowed into your mana')
+    expect(page, 'Every 10 minutes of suppression adds one to your mana')
     r1 = page.evaluate("() => S.suppressions[0]")
     print('urge record:', {k: r1[k] for k in ('mode', 'label', 'spent', 'before', 'after', 'held')})
 

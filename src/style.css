@@ -248,9 +248,10 @@ nav button.here { outline: 1px solid var(--fg); outline-offset: -1px; }
 }
 .overlay {
   position: absolute; inset: 0; z-index: 18; background: rgba(0,0,0,0.9);
-  display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto;
+  display: flex; align-items: flex-start; justify-content: center; padding: 24px 16px 16px; overflow-y: auto;
 }
-.overlay .win { background: var(--bg); width: 100%; max-height: 100%; overflow-y: auto; box-sizing: border-box; }
+/* The window grows with its content and the overlay scrolls, so the title on the border is never clipped. */
+.overlay .win { background: var(--bg); width: 100%; margin: auto 0; box-sizing: border-box; }
 .overlay textarea[readonly] { font-size: 0.6em; }
 
 @media (prefers-reduced-motion: reduce) {
