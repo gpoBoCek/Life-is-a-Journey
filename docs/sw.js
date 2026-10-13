@@ -2,7 +2,7 @@
    The page is fetched fresh from the network whenever there is a connection, so an update arrives the next time the
    app opens; without a connection, the last copy is used and the app works offline.
    This file only stores the app's own files. The journey itself lives in the page's storage and is never touched here. */
-const BUILD = 'ae048d7ebf';
+const BUILD = '82a84fd655';
 const CACHE = 'lij-app-' + BUILD;
 const SHELL = ['./', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 

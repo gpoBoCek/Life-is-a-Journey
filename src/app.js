@@ -11,6 +11,7 @@ const PHOSPHORS = {
   amber: { label: 'AMBER', note: 'yellow', fg: '#FFCC3D', dim: '#C29A2C', faint: '#54420F' },
   red: { label: 'WARM RED', note: 'ember', fg: '#FF6A4D', dim: '#D0503A', faint: '#4F1C12' },
   blue: { label: 'BLUE', note: 'cold', fg: '#5CB8FF', dim: '#4A8FCC', faint: '#15344F' },
+  purple: { label: 'PURPLE', note: 'arcane', fg: '#C38BFF', dim: '#9466C9', faint: '#3B2556' },
   white: { label: 'WHITE', note: 'plain', fg: '#EDEDED', dim: '#A8A8A8', faint: '#3A3A3A' }
 };
 const WEATHER = ['CLEAR', 'FAIR', 'GREY', 'RAIN', 'STORM'];
