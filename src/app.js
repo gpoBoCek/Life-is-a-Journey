@@ -157,6 +157,7 @@ function migrate(s) {
     if (!r.hits) { r.hits = {}; Object.keys(r.casts || {}).forEach((d) => { r.hits[d] = [r.casts[d]]; }); }
   });
   // Hexes broken before revisits existed were answered on the day they were written, and have no revisit.
+  (s.errands || []).forEach((e) => { if (e.need == null) e.need = 1; if (e.got == null) e.got = 0; });
   (s.dispels || []).forEach((x) => {
     if (x.after != null && !x.ad) x.ad = x.d;
     if (x.rv === undefined) { x.rv = 0; x.due = null; x.later = null; x.ld = null; x.pid = x.pid || null; }
@@ -297,12 +298,12 @@ function event(kind, extra) { S.events.push(Object.assign({ k: kind, d: today(),
 function act(kind, extra) { if (kind) event(kind, extra); }
 
 /* A day counts as a league only if, when it ends, something done that day is still on the record:
-   a cast (or a partial cast), a finished errand, a peek, a scouted or cleared floor, a hex caught, broken or revisited,
+   a cast (or a partial cast), a finished errand (or one more of an errand done several times), a peek, a scouted or cleared floor, a hex caught, broken or revisited,
    a sealed or reviewed worry, a prophecy written or judged, a steadying or suppression session,
    the inner weather, or the journal line. Undoing an action removes it from the record, so it stops counting.
    Writing down plans alone (adding errands or rituals) does not count.
    Steps walked are a separate measurement: they never count toward a league, only toward statistics and mana. */
-const DEED_KINDS = new Set(['cast', 'errand', 'peek', 'scout', 'floor', 'dispel', 'hex_catch', 'hex_revisit', 'seal', 'review', 'steady', 'prophecy', 'prophecy_new', 'suppress']);
+const DEED_KINDS = new Set(['cast', 'errand', 'errand_part', 'peek', 'scout', 'floor', 'dispel', 'hex_catch', 'hex_revisit', 'seal', 'review', 'steady', 'prophecy', 'prophecy_new', 'suppress']);
 let deedCache = { key: null, map: null };
 function deedIndex() {
   const key = S.savedAt + '|' + S.events.length + '|' + today();
@@ -649,16 +650,42 @@ function errandsDue() {
   const t = today();
   return S.errands.filter((e) => !e.dread && e.date && e.date <= t).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
 }
+// An errand can need doing several times (three trash bags: need 3). Each tap counts one; the last one completes it.
+function errandNeed(e) { return Math.max(1, Math.min(99, Number(e.need) || 1)); }
+function errandMark(e) { const n = errandNeed(e); return n > 1 ? '[' + (e.got || 0) + '/' + n + ']' : '[ ]'; }
+function errandStep(e, dir) {
+  const need = errandNeed(e);
+  if (dir > 0) {
+    if ((e.got || 0) + 1 >= need) { completeErrand(e); return; }
+    e.got = (e.got || 0) + 1;
+    act('errand_part', { id: e.id, text: e.text, n: e.got, of: need });
+    say(e.text + ': ' + e.got + ' of ' + need + '.');
+    showToast(e.text + ': ' + e.got + ' of ' + need, { kind: 'errandPart', id: e.id });
+    save();
+    return;
+  }
+  if (!e.got) return;
+  e.got--;
+  // Taking one back removes today's record of it, so a tap and an undo leave no trace. Earlier days stay as they were.
+  for (let i = S.events.length - 1; i >= 0; i--) {
+    const x = S.events[i];
+    if (x.k === 'errand_part' && x.id === e.id) { if (x.d === today()) S.events.splice(i, 1); break; }
+  }
+  say(e.text + ': ' + e.got + ' of ' + need + '.');
+  save();
+}
 function completeErrand(e) {
   const snap = JSON.parse(JSON.stringify(e));
   const idx = S.errands.indexOf(e);
+  const need = errandNeed(e);
   if (e.repeat) {
     e.date = addDays(today(), e.repeat);
+    e.got = 0;
     (e.list || []).forEach((x) => { x.done = false; });
   } else {
     S.errands.splice(idx, 1);
   }
-  act('errand', { id: e.id, text: e.text });
+  act('errand', need > 1 ? { id: e.id, text: e.text, of: need } : { id: e.id, text: e.text });
   say(e.text + ': done.' + (e.repeat ? ' Back on ' + fmtDate(e.date) + '.' : ''));
   maybeSpell('errand', 'errand:' + e.id + ':' + today());
   showToast('Done: ' + e.text, { kind: 'errand', snap: snap, idx: idx, repeat: !!e.repeat });
@@ -677,7 +704,11 @@ function undoErrand(u) {
   save();
 }
 function newErrand(text, date) {
-  return { id: uid(), text: text, date: date || null, time: null, dread: false, dreadAt: null, list: [], repeat: null, created: today() };
+  // "trash bags x3" at the end of the text means it needs doing three times
+  let need = 1;
+  const m = /\s+[x×](\d{1,2})$/i.exec(text);
+  if (m && Number(m[1]) > 1 && text.length > m[0].length) { need = Number(m[1]); text = text.slice(0, -m[0].length).trim(); }
+  return { id: uid(), text: text, date: date || null, time: null, dread: false, dreadAt: null, list: [], repeat: null, need: need, got: 0, created: today() };
 }
 function newRitual(name) {
   return { id: uid(), name: name, least: '', cue: '', time: null, per: 1, created: today(), casts: {}, hits: {}, rests: {}, spellName: null, archived: false };
@@ -1276,7 +1307,8 @@ function errandRow(e) {
   if (e.date && e.date !== today()) meta.push(fmtDate(e.date));
   if (e.list && e.list.length) meta.push(e.list.filter((x) => x.done).length + '/' + e.list.length);
   if (e.repeat) meta.push('every ' + plural(e.repeat, 'day'));
-  return '<div class="row item"><button class="mark lnk" data-a="tick" data-id="' + e.id + '" aria-label="Mark done: ' + esc(e.text) + '">[ ]</button>' +
+  const need = errandNeed(e);
+  return '<div class="row item"><button class="mark lnk" data-a="tick" data-id="' + e.id + '" aria-label="' + (need > 1 ? 'One more done: ' + esc(e.text) + ', ' + (e.got || 0) + ' of ' + need : 'Mark done: ' + esc(e.text)) + '">' + errandMark(e) + '</button>' +
     '<button class="grow lnk" data-a="openErrand" data-id="' + e.id + '">' + esc(e.text) + (meta.length ? '<span class="sub">' + meta.join(' · ') + '</span>' : '') + '</button></div>';
 }
 function addForm(where) {
@@ -1285,7 +1317,7 @@ function addForm(where) {
   return '<div class="seg" role="group" aria-label="Kind">' +
     ['errand', 'ritual'].map((k) => '<button class="segb' + (kind === k ? ' on' : '') + '" data-a="setForm" data-k="addKind" data-v="' + k + '" aria-pressed="' + (kind === k) + '">' + k.toUpperCase() + '</button>').join('') + '</div>' +
     '<div class="inline"><label class="sr" for="f-add">' + (kind === 'ritual' ? 'New ritual' : 'New errand') + '</label><input id="f-add" type="text" maxlength="140" placeholder="' + (kind === 'ritual' ? 'a daily habit, e.g. read' : 'something to do') + '" data-bind="addText" data-enter="add" data-where="' + where + '" value="' + esc(fval('addText')) + '"><button class="btn" data-a="add" data-where="' + where + '">ADD</button></div>' +
-    (kind === 'errand' ? '<div class="seg small" role="group" aria-label="When">' + [['today', 'TODAY'], ['tomorrow', 'TOMORROW'], ['someday', 'SOMEDAY']].map((w) => '<button class="segb' + (when === w[0] ? ' on' : '') + '" data-a="setForm" data-k="addWhen" data-v="' + w[0] + '" aria-pressed="' + (when === w[0]) + '">' + w[1] + '</button>').join('') + '</div>' : '<p class="dim small">Rituals are daily. Add a time and a cue after.</p>');
+    (kind === 'errand' ? '<div class="seg small" role="group" aria-label="When">' + [['today', 'TODAY'], ['tomorrow', 'TOMORROW'], ['someday', 'SOMEDAY']].map((w) => '<button class="segb' + (when === w[0] ? ' on' : '') + '" data-a="setForm" data-k="addWhen" data-v="' + w[0] + '" aria-pressed="' + (when === w[0]) + '">' + w[1] + '</button>').join('') + '</div><p class="dim small">End with x3 for something done three times, like "trash bags x3".</p>' : '<p class="dim small">Rituals are daily. Add a time and a cue after.</p>');
 }
 
 /* ---- QUESTS ---- */
@@ -1344,6 +1376,8 @@ VIEWS.errand = function (v) {
     '<div class="two"><div><label for="e-date" class="lbl">Date</label><input id="e-date" type="date" data-bind="e-date" value="' + esc(fval('e-date', e.date || '')) + '"></div>' +
     '<div><label for="e-time" class="lbl">Time</label><input id="e-time" type="time" data-bind="e-time" value="' + esc(fval('e-time', e.time || '')) + '"></div></div>' +
     '<label for="e-repeat" class="lbl">Repeat every N days (empty for one-off)</label><input id="e-repeat" type="number" min="1" max="365" inputmode="numeric" data-bind="e-repeat" value="' + esc(fval('e-repeat', e.repeat || '')) + '">' +
+    '<label for="e-need" class="lbl">Times to do it before it is done (e.g. 3 for three trash bags)</label><input id="e-need" type="number" min="1" max="99" inputmode="numeric" data-bind="e-need" value="' + esc(fval('e-need', errandNeed(e))) + '">' +
+    (errandNeed(e) > 1 ? '<p class="lbl">DONE SO FAR: ' + (e.got || 0) + ' OF ' + errandNeed(e) + '</p><div class="btns"><button class="btn solid" data-a="errPlus" data-id="' + e.id + '">+1</button><button class="btn" data-a="errMinus" data-id="' + e.id + '"' + (e.got ? '' : ' disabled') + '>-1</button></div>' : '') +
     '<button class="row lnk wide" data-a="setForm" data-k="e-dread" data-v="' + (!dread) + '" aria-pressed="' + !!dread + '"><span class="mark">' + (dread ? '[x]' : '[ ]') + '</span><span class="grow">Dreaded<span class="sub">It becomes a chest you can peek into.</span></span></button>' +
     '<div class="btns"><button class="btn solid" data-a="saveErrand" data-id="' + e.id + '">SAVE</button><button class="btn" data-a="doneErrand" data-id="' + e.id + '">DONE</button></div>');
   h += win('CHECKLIST',
@@ -1930,7 +1964,10 @@ VIEWS.day = function (v) {
 
   const ev = S.events.filter((e) => e.d === d);
   const items = [];
-  ev.filter((e) => e.k === 'errand').forEach((e) => items.push(['Errand done', e.text ? esc(e.text) : 'an errand']));
+  ev.filter((e) => e.k === 'errand').forEach((e) => items.push(['Errand done', (e.text ? esc(e.text) : 'an errand') + (e.of ? ' · all ' + e.of : '')]));
+  const parts = {};
+  ev.filter((e) => e.k === 'errand_part').forEach((e) => { parts[e.id] = e; });
+  Object.keys(parts).forEach((id) => { const e = parts[id]; items.push(['Errand progress', esc(e.text || 'an errand') + ' · ' + e.n + ' of ' + e.of]); });
   ev.filter((e) => e.k === 'peek').forEach((e) => items.push(['Chest opened', (e.text ? esc(e.text) : 'a chest') + (e.exp != null ? ' · expected ' + e.exp + (e.found != null ? ', found ' + e.found : '') : '')]));
   ev.filter((e) => e.k === 'scout').forEach((e) => {
     let txt = 'a floor';
@@ -2094,11 +2131,21 @@ A.add = (el) => {
   render();
   const inp = $('#f-add'); if (inp) inp.focus();
 };
-A.tick = (el) => { const e = S.errands.find((x) => x.id === el.dataset.id); if (e) { completeErrand(e); render(); } };
+A.tick = (el) => { const e = S.errands.find((x) => x.id === el.dataset.id); if (e) { errandStep(e, 1); render(); } };
+// +1 from the errand screen: the last one completes the errand and returns to the list.
+A.errPlus = (el) => {
+  const e = S.errands.find((x) => x.id === el.dataset.id); if (!e) return;
+  const last = (e.got || 0) + 1 >= errandNeed(e);
+  if (last) { stopTickers(); UI.stack.pop(); }
+  errandStep(e, 1);
+  render(last);
+};
+A.errMinus = (el) => { const e = S.errands.find((x) => x.id === el.dataset.id); if (e) { errandStep(e, -1); render(); } };
 A.undo = () => {
   const u = UI.toast && UI.toast.undo;
   UI.toast = null;
   if (u && u.kind === 'errand') undoErrand(u);
+  if (u && u.kind === 'errandPart') { const e = S.errands.find((x) => x.id === u.id); if (e) errandStep(e, -1); }
   render();
 };
 // Tap on a ritual: adds one cast until the day is done; tapping a finished ritual takes one back.
@@ -2176,6 +2223,14 @@ A.saveErrand = (el) => {
   if (f['e-date'] !== undefined) e.date = f['e-date'] || null;
   if (f['e-time'] !== undefined) e.time = f['e-time'] || null;
   if (f['e-repeat'] !== undefined) { const n = parseInt(f['e-repeat'], 10); e.repeat = n > 0 ? Math.min(n, 365) : null; if (e.repeat && !e.date) e.date = today(); }
+  let finish = false;
+  if (f['e-need'] !== undefined) {
+    const n = parseInt(f['e-need'], 10);
+    e.need = n > 0 ? Math.min(n, 99) : 1;
+    // Lowered to what is already done: it is finished.
+    if (e.need > 1 && (e.got || 0) >= e.need) finish = true;
+    if (e.need === 1 && e.got) finish = true;
+  }
   if (f['e-dread'] !== undefined && f['e-dread'] !== e.dread) {
     e.dread = !!f['e-dread'];
     e.dreadAt = e.dread ? today() : null;
@@ -2183,7 +2238,7 @@ A.saveErrand = (el) => {
   }
   save();
   back();
-  toast('Saved.');
+  if (finish) { completeErrand(e); render(); } else toast('Saved.');
 };
 A.doneErrand = (el) => { const e = S.errands.find((x) => x.id === el.dataset.id); if (!e) return; stopTickers(); UI.stack.pop(); completeErrand(e); render(true); };
 A.delErrand = (el) => {
