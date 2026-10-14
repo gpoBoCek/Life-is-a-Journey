@@ -83,7 +83,7 @@ const FIELD_NOTES = [
       'Not a monster. The horse you ride the whole road on.',
       'A starved, sleepless mount makes every monster stronger. Before you blame the traveller, check the mount: has it slept, eaten a real meal, moved, seen daylight?',
       'Regular sleep and waking times, real meals and some movement each day are not separate quests. They are what every other quest stands on.',
-      'The steps you record at camp are the mount\'s own ledger. On the Road you can see how far it has carried you, week by week.'
+      'The steps and weight you record at camp are the mount\'s own ledger. On the Road you can see how far it has carried you, week by week.'
     ],
     note: 'Sleep, diet and physical activity have well-documented effects on mood and anxiety. Regular exercise has evidence as a treatment for depression.'
   },

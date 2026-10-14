@@ -304,7 +304,7 @@ pre.companion { flex: 0 0 auto; font-size: 0.85em; line-height: 1.05; overflow: 
 </style>
 <div id="app"></div>
 <script>
-const BUILD = '054285eb8a';
+const BUILD = '71ebc2d0bd';
 const PWA = true;
 /* Spells. Rare and legendary spells are hand-written.
    Common and uncommon spells are generated from typed parts (see SPELLGEN). */
@@ -1207,7 +1207,7 @@ const FIELD_NOTES = [
       'Not a monster. The horse you ride the whole road on.',
       'A starved, sleepless mount makes every monster stronger. Before you blame the traveller, check the mount: has it slept, eaten a real meal, moved, seen daylight?',
       'Regular sleep and waking times, real meals and some movement each day are not separate quests. They are what every other quest stands on.',
-      'The steps you record at camp are the mount\'s own ledger. On the Road you can see how far it has carried you, week by week.'
+      'The steps and weight you record at camp are the mount\'s own ledger. On the Road you can see how far it has carried you, week by week.'
     ],
     note: 'Sleep, diet and physical activity have well-documented effects on mood and anxiety. Regular exercise has evidence as a treatment for depression.'
   },
@@ -1397,6 +1397,7 @@ function freshState() {
     waystones: [],
     prophecies: [],
     suppressions: [],
+    weightGoals: [],
     active: null,
     mana: { at: null, snaps: [] },
     lastWaystone: null
@@ -1412,6 +1413,7 @@ function migrate(s) {
   });
   // Hexes broken before revisits existed were answered on the day they were written, and have no revisit.
   (s.errands || []).forEach((e) => { if (e.need == null) e.need = 1; if (e.got == null) e.got = 0; });
+  if (!Array.isArray(s.weightGoals)) s.weightGoals = [];
   (s.dispels || []).forEach((x) => {
     if (x.after != null && !x.ad) x.ad = x.d;
     if (x.rv === undefined) { x.rv = 0; x.due = null; x.later = null; x.ld = null; x.pid = x.pid || null; }
@@ -1602,6 +1604,112 @@ function stepsField(key, d, rec) {
   return '<div class="inline"><label class="sr" for="' + id + '">Steps walked on ' + fmtFull(d) + '</label>' +
     '<input id="' + id + '" type="text" inputmode="numeric" autocomplete="off" maxlength="9" placeholder="steps walked" data-bind="' + key + '" data-enter="saveSteps" data-d="' + d + '" data-k="' + key + '" value="' + esc(fval(key, rec.s != null ? fmtNum(rec.s) : '')) + '">' +
     '<button class="btn" data-a="saveSteps" data-d="' + d + '" data-k="' + key + '">SAVE</button></div>';
+}
+/* ---------------- weight ---------------- */
+/* Logged in kilograms on any day, like steps, and never a deed for leagues. Day-to-day weight swings with water and
+   food, so everything that judges progress uses the 7-day average (all entries in the 7 days up to a date).
+   A goal has a start (the 7-day average when it was set) and a target. Each 10% of the way, reached by the 7-day
+   average, adds one mana; a milestone once reached stays reached, and a goal gives at most 10. */
+const KG_MIN = 25, KG_MAX = 350, GOAL_MIN_KG = 2;
+function parseKg(raw) {
+  const t = String(raw == null ? '' : raw).trim().toLowerCase().replace(/\s*kg$/, '').replace(',', '.');
+  if (!t) return { clear: true };
+  if (!/^\d{2,3}(\.\d{1,2})?$/.test(t)) return { error: 'Weight is a number in kilograms, like 78.4.' };
+  const n = Math.round(Number(t) * 10) / 10;
+  if (n < KG_MIN || n > KG_MAX) return { error: 'That weight looks off. Check the number.' };
+  return { n: n };
+}
+function fmtKg(n) { return (Math.round(n * 10) / 10).toFixed(1); }
+function signedKg(n) { const r = Math.round(n * 10) / 10; return (r > 0 ? '+' : r < 0 ? '-' : '') + Math.abs(r).toFixed(1); }
+function kgDates() { return Object.keys(S.days).filter((k) => S.days[k].kg != null).sort(); }
+function kgAvg(d) {
+  let sum = 0, n = 0;
+  for (let i = 0; i < 7; i++) { const x = S.days[addDays(d, -i)]; if (x && x.kg != null) { sum += x.kg; n++; } }
+  return n ? sum / n : null;
+}
+function kgWeek(start) {
+  let sum = 0, n = 0;
+  for (let i = 0; i < 7; i++) { const x = S.days[addDays(start, i)]; if (x && x.kg != null) { sum += x.kg; n++; } }
+  return { avg: n ? sum / n : null, n: n };
+}
+function kgNow() { const ds = kgDates(); return ds.length ? kgAvg(ds[ds.length - 1]) : null; }
+function weightGoal() { return (S.weightGoals || []).find((g) => !g.to) || null; }
+function goalProgress(g) {
+  const to = g.to || today();
+  const dist = g.target - g.start;
+  let best = 0, now = null;
+  kgDates().filter((k) => k >= g.from && k <= to).forEach((k) => {
+    const a = kgAvg(k);
+    const pr = dist ? (a - g.start) / dist : 0;
+    if (pr > best) best = pr;
+    now = { avg: a, p: pr, d: k };
+  });
+  return { best: Math.min(1, Math.max(0, best)), now: now };
+}
+function goalMilestones(g) { return Math.min(10, Math.floor(goalProgress(g).best * 10 + 1e-9)); }
+function weightMana() { return (S.weightGoals || []).reduce((a, g) => a + goalMilestones(g), 0); }
+function setKg(d, n) {
+  const rec = dayRec(d);
+  const name = d === today() ? 'today' : d === addDays(today(), -1) ? 'yesterday' : fmtDate(d);
+  if (n == null) {
+    if (rec.kg == null) return null;
+    delete rec.kg;
+    say('Weight for ' + name + ' cleared.');
+    return 'Weight for ' + name + ' cleared.';
+  }
+  const g = weightGoal();
+  const before = g ? goalMilestones(g) : 0;
+  rec.kg = n;
+  say('Weight for ' + name + ': ' + fmtKg(n) + ' kg.');
+  const after = g ? goalMilestones(g) : 0;
+  if (after > before) say('The weekly average passed ' + (after * 10) + '% of the way to your goal.');
+  return fmtKg(n) + ' kg recorded for ' + name + '.';
+}
+function kgField(key, d, rec) {
+  const id = 'f-' + key;
+  return '<div class="inline"><label class="sr" for="' + id + '">Weight in kilograms on ' + fmtFull(d) + '</label>' +
+    '<input id="' + id + '" type="text" inputmode="decimal" autocomplete="off" maxlength="6" placeholder="kg, e.g. 78.4" data-bind="' + key + '" data-enter="saveKg" data-d="' + d + '" data-k="' + key + '" value="' + esc(fval(key, rec.kg != null ? fmtKg(rec.kg) : '')) + '">' +
+    '<button class="btn" data-a="saveKg" data-d="' + d + '" data-k="' + key + '">SAVE</button></div>';
+}
+function goalBar(p) { const n = Math.min(10, Math.floor(p * 10 + 1e-9)); return '[' + '#'.repeat(n) + '.'.repeat(10 - n) + ']'; }
+function weightWindow() {
+  const ds = kgDates();
+  const g = weightGoal();
+  let h = '';
+  if (!ds.length) h += '<p class="dim small">No weight logged yet. Log it at camp, daily or whenever you like. The 7-day average smooths out the day-to-day swings.</p>';
+  else {
+    const now = kgNow(), first = S.days[ds[0]].kg;
+    const weeks = weeklySeries((st) => kgWeek(st), 12);
+    const tw = weeks[11], lw = weeks[10];
+    h += '<div class="statpair">' +
+      '<div><span class="bignum">' + fmtKg(now) + '</span><span class="statlbl">KG, 7-DAY AVERAGE</span></div>' +
+      '<div><span class="bignum">' + signedKg(now - first) + '</span><span class="statlbl">KG SINCE ' + fmtDate(ds[0]).toUpperCase() + '</span></div></div>';
+    h += '<div class="row tight"><span class="grow">This week</span><span class="meta">' + (tw.n ? fmtKg(tw.avg) + ' kg · ' + plural(tw.n, 'entry', 'entries') : 'none yet') + '</span></div>' +
+      '<div class="row tight"><span class="grow">Last week</span><span class="meta">' + (lw.n ? fmtKg(lw.avg) + ' kg' : 'none recorded') + '</span></div>' +
+      (tw.n && lw.n ? '<div class="row tight"><span class="grow">Week to week</span><span class="meta">' + signedKg(tw.avg - lw.avg) + ' kg</span></div>' : '') +
+      '<div class="row tight"><span class="grow">First entry</span><span class="meta">' + fmtKg(first) + ' kg · ' + plural(ds.length, 'entry', 'entries') + '</span></div>';
+    const vals = weeks.map((x) => x.avg).filter((v) => v != null);
+    if (vals.length >= 2) {
+      const lo = Math.min(...vals) - 0.5, hi = Math.max(...vals) + 0.5;
+      h += '<p class="lbl">WEEKLY AVERAGE</p><div class="bars" role="img" aria-label="Weekly average weight: ' + weeks.map((x) => (x.avg == null ? 'none' : fmtKg(x.avg))).join(', ') + '">' +
+        weeks.map((x, i) => '<span class="' + (i === 11 ? 'hi' : '') + '" style="height:' + (x.avg == null ? 0 : Math.max(3, Math.round(((x.avg - lo) / (hi - lo)) * 64))) + 'px"></span>').join('') + '</div>' +
+        '<div class="axis dim small"><span>12 weeks ago</span><span>this week</span></div><p class="dim small">Bars span ' + fmtKg(lo) + ' to ' + fmtKg(hi) + ' kg, so small changes are visible. Weeks with no entry are blank.</p>';
+    }
+  }
+  if (g) {
+    const pr = goalProgress(g);
+    const down = g.target < g.start;
+    const m = goalMilestones(g);
+    h += '<p class="lbl">GOAL: ' + (down ? 'DOWN' : 'UP') + ' TO ' + fmtKg(g.target) + ' KG</p>' +
+      '<p class="nomargin"><span class="nowrap">' + goalBar(pr.best) + '</span> ' + Math.round(pr.best * 100) + '% of the way</p>' +
+      '<p class="small">Started at ' + fmtKg(g.start) + ' kg ' + (g.from === today() ? 'today' : 'on ' + fmtDate(g.from)) + (pr.now ? '. Now ' + fmtKg(pr.now.avg) + ' kg' : '') + '. ' + m + ' of 10 mana earned.' + (pr.best >= 1 ? ' The goal is reached. Set a new one when you are ready.' : '') + '</p>' +
+      '<p class="dim small">Progress counts by the 7-day average. Each 10% reached adds one mana and stays earned.</p>';
+  }
+  const goalCap = g ? 'A NEW GOAL' : 'SET A GOAL';
+  h += '<p class="lbl">' + goalCap + '</p><div class="inline"><label class="sr" for="wg-target">Goal weight in kilograms</label><input id="wg-target" type="text" inputmode="decimal" maxlength="6" placeholder="goal, kg" data-bind="wg-target" data-enter="setWeightGoal" value="' + esc(fval('wg-target')) + '"><button class="btn" data-a="setWeightGoal">' + (UI.confirm === 'newgoal' ? 'TAP AGAIN' : 'SET') + '</button></div>' +
+    (UI.confirm === 'newgoal' ? '<p class="small">This ends the current goal and starts a new one from today\'s 7-day average. Mana already earned stays.</p>' : '<p class="dim small">Up or down follows from the goal and your current 7-day average. It must be at least ' + GOAL_MIN_KG + ' kg away.</p>') +
+    (g ? '<button class="lnk dim small" data-a="endWeightGoal">' + (UI.confirm === 'endgoal' ? 'TAP AGAIN TO END THE GOAL' : 'END THIS GOAL') + '</button>' : '');
+  return win('WEIGHT', h);
 }
 function stepsIn(start, days) {
   let sum = 0, n = 0;
@@ -2212,10 +2320,10 @@ const MANA_PARTS = [
   ['leagues', 'Days on the road', 1], ['cast', 'Rituals cast', 1], ['errand', 'Errands done', 1],
   ['peek', 'Chests opened', 5], ['floor', 'Delve floors cleared', 5], ['prophecy', 'Prophecies judged', 3],
   ['dispel', 'Hexes broken', 3], ['hex_revisit', 'Hexes revisited', 2], ['review', 'Worries reviewed', 2], ['steady', 'Steadying sessions', 2],
-  ['sup10', 'Suppression, per 10 minutes', 1], ['steps', 'Steps walked, per 1,000', 1]
+  ['sup10', 'Suppression, per 10 minutes', 1], ['steps', 'Steps walked, per 1,000', 1], ['weight10', 'Weight goal, per 10% of the way', 1]
 ];
 // Bumped whenever the way mana is counted changes, so a release is only compared with releases counted the same way.
-const MANA_RULES = 2;
+const MANA_RULES = 3;
 
 /* Mage classes. Thresholds follow how rare each class is: a class held by ten times fewer mages takes about ten times
    the mana. Known counts: 9th class about 2,000 mages, 5th about 600, 1st 51, Great Mages 4. The classes between are
@@ -2242,7 +2350,7 @@ function classLine() {
 }
 function manaSnapshot() {
   const stormy = new Set(Object.keys(S.days).filter((k) => S.days[k].w >= 3));
-  const counts = { leagues: leagues(), cast: 0, errand: 0, peek: 0, floor: 0, prophecy: 0, dispel: 0, hex_revisit: 0, review: 0, steady: 0, sup10: 0, steps: 0 };
+  const counts = { leagues: leagues(), cast: 0, errand: 0, peek: 0, floor: 0, prophecy: 0, dispel: 0, hex_revisit: 0, review: 0, steady: 0, sup10: 0, steps: 0, weight10: 0 };
   let bonus = 0, supSec = 0, stormSupSec = 0, steps = 0;
   const deedDays = new Set();
   S.events.forEach((e) => {
@@ -2254,6 +2362,7 @@ function manaSnapshot() {
   Object.keys(S.days).forEach((k) => { const s = S.days[k].s; if (s > 0) steps += s; });
   counts.sup10 = Math.floor(supSec / 600);
   counts.steps = Math.floor(steps / 1000);
+  counts.weight10 = weightMana();
   let total = bonus;
   MANA_PARTS.forEach((pt) => { total += counts[pt[0]] * pt[2]; });
   const stormDays = stormy.size;
@@ -2340,6 +2449,7 @@ function weekStats(start) {
     steps: st.sum,
     stepDays: st.n,
     stepAvg: st.avg,
+    kgAvg: kgWeek(start).avg,
     casts: ev.filter((e) => e.k === 'cast').length,
     errands: ev.filter((e) => e.k === 'errand').length,
     chests: ev.filter((e) => e.k === 'peek').length,
@@ -2586,10 +2696,11 @@ function renderCamp() {
   const sd = UI.stepsDay === 'y' ? ys : today();
   const srec = S.days[sd] || {};
   const yMissing = UI.stepsDay !== 'y' && !(S.days[ys] && S.days[ys].s != null) && ys >= S.created;
-  h += win('STEPS',
+  h += win('STEPS AND WEIGHT',
     '<div class="seg" role="group" aria-label="Which day">' + [['t', 'TODAY'], ['y', 'YESTERDAY']].map((x) => { const on = (UI.stepsDay === 'y') === (x[0] === 'y'); return '<button class="segb' + (on ? ' on' : '') + '" data-a="stepsDay" data-v="' + x[0] + '" aria-pressed="' + on + '">' + x[1] + '</button>'; }).join('') + '</div>' +
-    stepsField('steps', sd, srec) +
-    '<p class="dim small">' + (yMissing ? 'Yesterday has no steps yet. ' : '') + 'Older days can be filled in from the calendar on the Road.</p>');
+    '<p class="lbl">STEPS</p>' + stepsField('steps', sd, srec) +
+    '<p class="lbl">WEIGHT, KG</p>' + kgField('kg', sd, srec) +
+    '<p class="dim small">' + (yMissing ? 'Yesterday has no steps yet. ' : '') + 'Both are optional. Older days can be filled in from the calendar on the Road.</p>');
 
   if (now.getHours() >= 19) {
     const tm = addDays(today(), 1);
@@ -3116,6 +3227,7 @@ function renderRoad() {
   h += win('RITUALS CAST, PER WEEK', bars(casts) + compare(casts, 'a week'));
   h += win('ERRANDS DONE, PER WEEK', bars(errs) + compare(errs, 'a week'));
   h += stepsWindow(started);
+  h += weightWindow();
   h += win('CLEAR SKIES, PER WEEK', bars(sky, 7) + '<p class="dim small">Days a week with clear or fair inner weather.</p>');
 
   const floors = S.events.filter((e) => e.k === 'floor');
@@ -3249,8 +3361,8 @@ VIEWS.day = function (v) {
     '<div class="row tight"><span class="grow">Inner weather</span><span class="meta">' + (rec.w != null ? WEATHER[rec.w] : 'not recorded') + '</span></div>' +
     (rec.l ? '<p class="lbl">THE LINE</p><p>"' + esc(rec.l) + '"</p>' : '<p class="dim small">' + (d === t ? 'No line yet. You can write one at camp.' : 'No line was written.') + '</p>'));
 
-  h += win('STEPS', stepsField('dsteps', d, rec) +
-    '<p class="dim small">' + 'Steps count toward statistics and mana, not leagues. Leave it empty and save to clear.' + '</p>');
+  h += win('STEPS AND WEIGHT', '<p class="lbl">STEPS</p>' + stepsField('dsteps', d, rec) + '<p class="lbl">WEIGHT, KG</p>' + kgField('dkg', d, rec) +
+    '<p class="dim small">' + 'Steps and weight count toward statistics and mana, not leagues. Leave a field empty and save to clear it.' + '</p>');
 
   const rits = S.rituals.filter((r) => r.created <= d || r.casts[d] || (r.hits && r.hits[d]));
   if (rits.length) {
@@ -3354,7 +3466,7 @@ function renderModal() {
     body = win('A SPELL LEARNED', '<p>You have cast ' + esc(r ? r.name : '') + ' ten times. It enters the Grimoire as a spell you know.</p><label class="lbl" for="m-name">What will you call it?</label><input id="m-name" type="text" maxlength="60" data-bind="m-name" data-enter="nameSpell" value="' + esc(fval('m-name', r ? r.name : '')) + '"><button class="btn solid wide" data-a="nameSpell">NAME IT</button>');
   } else if (m.type === 'waystone') {
     const st = m.st;
-    const rows = [['Leagues', st.leagues], ['Rituals cast', st.casts], ['Errands done', st.errands], ['Chests opened', st.chests], ['Delve floors', st.floors ? st.floors + ' (scouted ' + st.scout + ', found ' + st.found + ')' : 0], ['Worries faded', st.reviewed ? st.dissolved + ' of ' + st.reviewed : 0], ['Prophecies judged', st.prophecies ? st.prophecies + ' (' + st.ptrue + ' came true)' : 0], ['Minutes of suppression', st.supmin], ['Steps walked', st.stepDays ? fmtNum(st.steps) + ' (' + fmtNum(st.stepAvg) + ' a day)' : 0], ['Spells found', st.spells]];
+    const rows = [['Leagues', st.leagues], ['Rituals cast', st.casts], ['Errands done', st.errands], ['Chests opened', st.chests], ['Delve floors', st.floors ? st.floors + ' (scouted ' + st.scout + ', found ' + st.found + ')' : 0], ['Worries faded', st.reviewed ? st.dissolved + ' of ' + st.reviewed : 0], ['Prophecies judged', st.prophecies ? st.prophecies + ' (' + st.ptrue + ' came true)' : 0], ['Minutes of suppression', st.supmin], ['Steps walked', st.stepDays ? fmtNum(st.steps) + ' (' + fmtNum(st.stepAvg) + ' a day)' : 0], ['Weight, weekly average', st.kgAvg != null ? fmtKg(st.kgAvg) + ' kg' : '-'], ['Spells found', st.spells]];
     body = win('WAYSTONE · WEEK OF ' + fmtDate(m.week).toUpperCase(), rows.map((r) => '<div class="row tight"><span class="grow">' + r[0] + '</span><span class="meta">' + r[1] + '</span></div>').join('') +
       '<label class="lbl" for="m-help">What helped this week?</label><textarea id="m-help" rows="2" maxlength="300" data-bind="m-help" placeholder="optional">' + esc(fval('m-help')) + '</textarea>' +
       '<div class="btns"><button class="btn solid" data-a="waystoneSave">CARVE IT</button><button class="btn" data-a="closeModal">WALK ON</button></div>');
@@ -3504,7 +3616,45 @@ A.inscribe = () => {
   save(); render();
 };
 
-A.stepsDay = (el) => { UI.stepsDay = el.dataset.v; delete UI.form.steps; render(); };
+A.stepsDay = (el) => { UI.stepsDay = el.dataset.v; delete UI.form.steps; delete UI.form.kg; render(); };
+// Saving an empty weight field clears that day's weight.
+A.saveKg = (el) => {
+  const d = el.dataset.d, key = el.dataset.k;
+  if (!d || d > today()) return;
+  const rec = S.days[d] || {};
+  const raw = UI.form[key] !== undefined ? UI.form[key] : (rec.kg != null ? String(rec.kg) : '');
+  const p = parseKg(raw);
+  if (p.error) { toast(p.error); return; }
+  delete UI.form[key];
+  const msg = setKg(d, p.clear ? null : p.n);
+  if (msg == null) { render(); return; }
+  save();
+  if (topView() && topView().type === 'day') showToast(msg);
+  render();
+};
+A.setWeightGoal = () => {
+  const p = parseKg(UI.form['wg-target']);
+  if (p.clear) { toast('Write the goal weight first.'); return; }
+  if (p.error) { toast(p.error); return; }
+  const start = kgAvg(today());
+  if (start == null) { toast('Log your weight first, so the goal has a starting point.'); return; }
+  if (Math.abs(p.n - start) < GOAL_MIN_KG) { toast('Set a goal at least ' + GOAL_MIN_KG + ' kg from your 7-day average (' + fmtKg(start) + ' kg).'); return; }
+  const cur = weightGoal();
+  if (cur && UI.confirm !== 'newgoal') { UI.confirm = 'newgoal'; render(); return; }
+  if (!S.weightGoals) S.weightGoals = [];
+  if (cur) cur.to = today();
+  S.weightGoals.push({ id: uid(), start: Math.round(start * 10) / 10, target: p.n, from: today(), to: null });
+  UI.confirm = null; delete UI.form['wg-target'];
+  say('A weight goal is set: ' + (p.n < start ? 'down' : 'up') + ' to ' + fmtKg(p.n) + ' kg, from ' + fmtKg(start) + '.');
+  save(); render();
+};
+A.endWeightGoal = () => {
+  const cur = weightGoal(); if (!cur) return;
+  if (UI.confirm !== 'endgoal') { UI.confirm = 'endgoal'; render(); return; }
+  cur.to = today(); UI.confirm = null;
+  say('The weight goal is ended. The mana it earned stays.');
+  save(); render();
+};
 // Saves steps for the day on the button or field. Saving an empty field clears that day's steps.
 A.saveSteps = (el) => {
   const d = el.dataset.d, key = el.dataset.k;

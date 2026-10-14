@@ -14,8 +14,8 @@ Android phone as an installed web app served by GitHub Pages from `docs/`.
 - Data lives in the phone's localStorage under `lij.state.v1`. Never rename the key or change `v: 1` semantics.
 - Every schema change goes through `migrate()` and must keep old records readable; never delete user records.
 - `lij.snapshots.v1` keeps copies from before the last 3 updates (restorable in Options). Keep that working.
-- Leagues anti-cheat: only a day that ends with a real deed on the record counts; undo removes it. Steps never count
-  toward leagues (statistics and mana only).
+- Leagues anti-cheat: only a day that ends with a real deed on the record counts; undo removes it. Steps and weight
+  never count toward leagues (statistics and mana only). Weight progress is judged by the 7-day average.
 - Mana is derived from the record. If the way it is counted changes, bump `MANA_RULES` so releases are only compared
   with releases counted the same way. Mage classes are granted only at a release and never taken away (`S.mana.rank`).
 - Keep tests and example text free of Daniel's personal details: this repository is public.
