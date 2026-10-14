@@ -167,6 +167,7 @@ button.row { background: none; border: 0; padding: 0; cursor: pointer; text-alig
 .strip i.rest::after { width: 12px; height: 3px; background: var(--dim); }
 .strip i.open::after { width: 10px; height: 10px; background: none; border: 1px solid var(--dim); }
 .strip i.before::after { background: none; }
+.strip i.off::after { background: var(--faint); }
 .statgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
 .bignum { display: block; font-size: 2.4em; line-height: 1; }
 .leagues { display: flex; align-items: baseline; gap: 10px; letter-spacing: 2px; }

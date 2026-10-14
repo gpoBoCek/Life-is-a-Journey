@@ -156,6 +156,9 @@ function migrate(s) {
   for (const k of Object.keys(f.settings)) if (s.settings[k] === undefined) s.settings[k] = f.settings[k];
   (s.rituals || []).forEach((r) => {
     if (!r.per) r.per = 1;
+    if (!r.mode) r.mode = 'daily';
+    if (!r.week) r.week = 1;
+    if (!Array.isArray(r.restWeeks)) r.restWeeks = [];
     if (!r.hits) { r.hits = {}; Object.keys(r.casts || {}).forEach((d) => { r.hits[d] = [r.casts[d]]; }); }
   });
   // Hexes broken before revisits existed were answered on the day they were written, and have no revisit.
@@ -663,7 +666,86 @@ function pruneRolls() {
 
 /* ---------------- rituals ---------------- */
 
+/* Weekly rituals (r.mode 'weekly', r.week sessions a week, e.g. workouts 4 times a week).
+   Weeks run Monday to Sunday. A session is a cast: it counts for the day's league, 1 mana, ranks and charts.
+   Days without a session are never misses. The flame counts full weeks:
+     target met: the flame grows by a week;  some sessions, or a rest week: it holds;
+     an empty week: forgiven once, two in a row put it out.
+   The current week is only judged once it ends (or as soon as the target is met), and a ritual's first, partial week
+   is never held against it. Several sessions on one day are kept in r.hits[d]; r.casts[d] marks the first. */
+function isWeekly(r) { return r.mode === 'weekly'; }
+function weekTarget(r) { return Math.max(1, Math.min(14, Number(r.week) || 1)); }
+function sessionsOn(r, d) { return r.casts[d] ? Math.max(1, r.hits && r.hits[d] ? r.hits[d].length : 1) : 0; }
+function sessionsInWeek(r, ws) { let n = 0; for (let i = 0; i < 7; i++) n += sessionsOn(r, addDays(ws, i)); return n; }
+function isRestWeek(r, ws) { return (r.restWeeks || []).includes(ws); }
+function weeklyStats(r) {
+  const t = today(), cur = weekStart(t);
+  const firstCast = Object.keys(r.casts).sort()[0];
+  let start = r.created;
+  if (firstCast && firstCast < start) start = firstCast;
+  const firstWeek = weekStart(start);
+  const T = weekTarget(r);
+  let total = 0;
+  Object.keys(r.casts).forEach((d) => { total += sessionsOn(r, d); });
+  let alive = false, flame = 0, miss = 0, longest = 0, full = 0, judged = 0, guard = 0;
+  for (let w = firstWeek; w <= cur && guard++ < 3000; w = addDays(w, 7)) {
+    const n = sessionsInWeek(r, w);
+    const partialFirst = w === firstWeek && r.created > w && !(firstCast && firstCast < r.created);
+    if (n >= T) { full++; judged++; if (!alive) { alive = true; flame = 0; } flame++; miss = 0; longest = Math.max(longest, flame); }
+    else if (w === cur || (partialFirst && n === 0)) { /* not judged yet, or a first week that began part-way */ }
+    else if (isRestWeek(r, w)) { miss = 0; }
+    else if (n > 0) { judged++; if (!alive) { alive = true; flame = 0; } miss = 0; }
+    else { judged++; if (alive) { miss++; if (miss > 1) { alive = false; flame = 0; miss = 0; } } }
+  }
+  let status = 'unlit';
+  if (alive) status = miss === 1 ? 'flickering' : 'burning';
+  else if (total > 0) status = 'embers';
+  const wk = sessionsInWeek(r, cur);
+  return { weekly: true, total: total, flame: flame, longest: longest, status: status, castToday: !!r.casts[t], restToday: false, restWeek: isRestWeek(r, cur), week: wk, target: T, full: full, judged: judged };
+}
+// "2 more, 3 days left": shown only while this week's target can still be met at one session a day.
+function weekReminder(r, st) {
+  if (st.restWeek) return 'rest week';
+  const left = st.target - st.week;
+  if (left <= 0) return 'done for the week';
+  const t = today();
+  const daysLeft = 7 - ((parseD(t).getDay() + 6) % 7);
+  const slots = daysLeft - (st.castToday ? 1 : 0);
+  if (left > slots) return '';
+  return left + ' more, ' + plural(slots, 'day') + ' left';
+}
+function weeklyHit(r, dir) {
+  const t = today();
+  const n = sessionsOn(r, t);
+  if (dir > 0) {
+    if (n >= 9) return;
+    if (n === 0) { r.hits[t] = [hm()]; completeToday(r, true); }
+    else {
+      r.hits[t] = (r.hits[t] || [r.casts[t]]).concat(hm());
+      act('cast', { rid: r.id, extra: true });
+      afterCast(r);
+    }
+  } else {
+    if (n === 0) return;
+    if (n === 1) { delete r.hits[t]; uncompleteToday(r); }
+    else {
+      r.hits[t].pop();
+      for (let i = S.events.length - 1; i >= 0; i--) { const e = S.events[i]; if (e.k === 'cast' && e.rid === r.id && e.d === t) { S.events.splice(i, 1); break; } }
+    }
+    const st = weeklyStats(r);
+    say(r.name + ': ' + st.week + ' of ' + st.target + ' this week.');
+  }
+  save();
+}
+// After a cast or a session: the milestone messages that depend on the total.
+function afterCast(r) {
+  const st = ritualStats(r);
+  if (st.weekly) say(r.name + ': session ' + st.week + ' of ' + st.target + ' this week.' + (st.week === st.target ? ' The week is full. ' + cap(flameLabel(st)) + '.' : ''));
+  if (st.total === 10 && !r.spellName) UI.modals.push({ type: 'learned', rid: r.id });
+  if (st.total === 66) say(r.name + ' is rooted.');
+}
 function ritualStats(r) {
+  if (isWeekly(r)) return weeklyStats(r);
   const t = today();
   const casts = r.casts || {}, rests = r.rests || {};
   const total = Object.keys(casts).length;
@@ -699,6 +781,7 @@ function rankOf(total) {
   return '';
 }
 function flameLabel(st) {
+  if (st.weekly && (st.status === 'burning' || st.status === 'flickering')) return (st.flame ? 'flame ' + plural(st.flame, 'week') : 'flame lit') + (st.status === 'flickering' ? ', flickering' : '');
   if (st.status === 'burning') return 'flame ' + st.flame;
   if (st.status === 'flickering') return 'flame ' + st.flame + ', flickering';
   if (st.status === 'embers') return 'embers';
@@ -712,10 +795,13 @@ function completeToday(r, roll) {
   r.casts[t] = hm();
   delete r.rests[t];
   act('cast', { rid: r.id });
-  const st = ritualStats(r);
-  say(r.name + ' cast' + (r.per > 1 ? ' (' + r.per + ' of ' + r.per + ')' : '') + '. ' + cap(flameLabel(st)) + '.');
-  if (st.total === 10 && !r.spellName) UI.modals.push({ type: 'learned', rid: r.id });
-  if (st.total === 66) say(r.name + ' is rooted.');
+  if (isWeekly(r)) afterCast(r);
+  else {
+    const st = ritualStats(r);
+    say(r.name + ' cast' + (r.per > 1 ? ' (' + r.per + ' of ' + r.per + ')' : '') + '. ' + cap(flameLabel(st)) + '.');
+    if (st.total === 10 && !r.spellName) UI.modals.push({ type: 'learned', rid: r.id });
+    if (st.total === 66) say(r.name + ' is rooted.');
+  }
   if (roll) maybeSpell('cast', 'cast:' + r.id + ':' + t);
 }
 function uncompleteToday(r) {
@@ -747,6 +833,7 @@ function rejudgeToday(r) {
   else if (!done && was) uncompleteToday(r);
 }
 function ritualMark(r, st) {
+  if (st.weekly) return st.restWeek ? '[r]' : '[' + st.week + '/' + st.target + ']';
   if (st.castToday) return '[x]';
   if (st.restToday) return '[r]';
   const n = hitsToday(r);
@@ -820,7 +907,11 @@ function newErrand(text, date) {
   return { id: uid(), text: text, date: date || null, time: null, dread: false, dreadAt: null, list: [], repeat: null, need: need, got: 0, created: today() };
 }
 function newRitual(name) {
-  return { id: uid(), name: name, least: '', cue: '', time: null, per: 1, created: today(), casts: {}, hits: {}, rests: {}, spellName: null, archived: false };
+  // "Workout 4/week", "Workout 4x a week", "Workout 4 times a week" make a weekly ritual
+  let mode = 'daily', week = 1;
+  const m = /\s+(\d{1,2})\s*(?:x|times)?\s*(?:\/|a|per)\s*(?:week|wk|w)$/i.exec(name);
+  if (m && Number(m[1]) >= 1 && Number(m[1]) <= 14 && name.length > m[0].length) { mode = 'weekly'; week = Number(m[1]); name = name.slice(0, -m[0].length).trim(); }
+  return { id: uid(), name: name, least: '', cue: '', time: null, per: 1, mode: mode, week: week, restWeeks: [], created: today(), casts: {}, hits: {}, rests: {}, spellName: null, archived: false };
 }
 
 /* ---------------- seals ---------------- */
@@ -1231,6 +1322,15 @@ function observations() {
       if (Math.abs(pOn - pOff) >= 0.15) out.push({ w: Math.abs(pOn - pOff), s: 'On days you cast ' + r.name + ', your weather was clear or fair ' + pct(pOn) + ' of the time. On other days, ' + pct(pOff) + '. (' + (on.length + off.length) + ' days.)' });
     }
   });
+  // For rituals done a few times a week (exercise, say), the day after a session is often the telling one.
+  S.rituals.filter(isWeekly).forEach((r) => {
+    const after = wdays.filter((k) => r.casts[addDays(k, -1)]);
+    const notAfter = wdays.filter((k) => !r.casts[addDays(k, -1)] && addDays(k, -1) >= r.created);
+    if (after.length >= 5 && notAfter.length >= 5) {
+      const a = after.filter(clear).length / after.length, b = notAfter.filter(clear).length / notAfter.length;
+      if (Math.abs(a - b) >= 0.15) out.push({ w: Math.abs(a - b), s: 'On days after a session of ' + r.name + ', your weather was clear or fair ' + pct(a) + ' of the time. After days without one, ' + pct(b) + '. (' + (after.length + notAfter.length) + ' days.)' });
+    }
+  });
   const errandDays = new Set(S.events.filter((e) => e.k === 'errand').map((e) => e.d));
   const eOn = wdays.filter((k) => errandDays.has(k)), eOff = wdays.filter((k) => !errandDays.has(k));
   if (eOn.length >= 5 && eOff.length >= 5) {
@@ -1405,10 +1505,12 @@ function renderCamp() {
       const st = ritualStats(r);
       const mark = ritualMark(r, st);
       const subs = [];
-      if (r.per > 1) subs.push(r.per + ' times a day');
+      if (st.weekly) { subs.push(st.castToday ? 'session done today' : st.target + ' a week'); const rem = weekReminder(r, st); if (rem) subs.push(rem); }
+      else if (r.per > 1) subs.push(r.per + ' times a day');
       if (r.least) subs.push('least: ' + esc(r.least));
-      return '<button class="row item" data-a="cast" data-id="' + r.id + '" aria-pressed="' + st.castToday + '" aria-label="' + esc(r.name) + ', ' + (st.castToday ? 'done today' : hitsToday(r) + ' of ' + (r.per || 1) + ' today') + '">' +
-        '<span class="mark">' + mark + '</span><span class="grow"><span class="' + (st.castToday ? 'faded' : '') + '">' + esc(r.name) + '</span>' +
+      const faded = st.weekly ? (st.week >= st.target || st.restWeek) : st.castToday;
+      return '<button class="row item" data-a="cast" data-id="' + r.id + '" aria-pressed="' + st.castToday + '" aria-label="' + esc(r.name) + ', ' + (st.weekly ? st.week + ' of ' + st.target + ' this week' + (st.castToday ? ', session done today' : '') : st.castToday ? 'done today' : hitsToday(r) + ' of ' + (r.per || 1) + ' today') + '">' +
+        '<span class="mark">' + mark + '</span><span class="grow"><span class="' + (faded ? 'faded' : '') + '">' + esc(r.name) + '</span>' +
         (subs.length ? '<span class="sub">' + subs.join(' · ') + '</span>' : '') + '</span>' +
         '<span class="meta">' + (r.time ? esc(r.time) + '<br>' : '') + flameLabel(st) + '</span></button>';
     }).join(''));
@@ -1477,7 +1579,7 @@ function addForm(where) {
   return '<div class="seg" role="group" aria-label="Kind">' +
     ['errand', 'ritual'].map((k) => '<button class="segb' + (kind === k ? ' on' : '') + '" data-a="setForm" data-k="addKind" data-v="' + k + '" aria-pressed="' + (kind === k) + '">' + k.toUpperCase() + '</button>').join('') + '</div>' +
     '<div class="inline"><label class="sr" for="f-add">' + (kind === 'ritual' ? 'New ritual' : 'New errand') + '</label><input id="f-add" type="text" maxlength="140" placeholder="' + (kind === 'ritual' ? 'a daily habit, e.g. read' : 'something to do') + '" data-bind="addText" data-enter="add" data-where="' + where + '" value="' + esc(fval('addText')) + '"><button class="btn" data-a="add" data-where="' + where + '">ADD</button></div>' +
-    (kind === 'errand' ? '<div class="seg small" role="group" aria-label="When">' + [['today', 'TODAY'], ['tomorrow', 'TOMORROW'], ['someday', 'SOMEDAY']].map((w) => '<button class="segb' + (when === w[0] ? ' on' : '') + '" data-a="setForm" data-k="addWhen" data-v="' + w[0] + '" aria-pressed="' + (when === w[0]) + '">' + w[1] + '</button>').join('') + '</div><p class="dim small">End with x3 for something done three times, like "trash bags x3".</p>' : '<p class="dim small">Rituals are daily. Add a time and a cue after.</p>');
+    (kind === 'errand' ? '<div class="seg small" role="group" aria-label="When">' + [['today', 'TODAY'], ['tomorrow', 'TOMORROW'], ['someday', 'SOMEDAY']].map((w) => '<button class="segb' + (when === w[0] ? ' on' : '') + '" data-a="setForm" data-k="addWhen" data-v="' + w[0] + '" aria-pressed="' + (when === w[0]) + '">' + w[1] + '</button>').join('') + '</div><p class="dim small">End with x3 for something done three times, like "trash bags x3".</p>' : '<p class="dim small">Daily by default. End with 4/week for one done four times a week, like "workout 4/week".</p>');
 }
 
 /* ---- QUESTS ---- */
@@ -1506,7 +1608,7 @@ function renderQuests() {
 }
 function ritualRow(r) {
   const st = ritualStats(r);
-  return '<button class="row item" data-a="openRitual" data-id="' + r.id + '"><span class="grow">' + esc(r.name) + '<span class="sub">' + (r.per > 1 ? r.per + 'x a day · ' : '') + (r.time ? esc(r.time) + ' · ' : '') + flameLabel(st) + ' · cast ' + st.total + (rankOf(st.total) ? ' · ' + rankOf(st.total).toLowerCase() : '') + '</span></span><span class="meta">' + strip(r, 7) + '</span></button>';
+  return '<button class="row item" data-a="openRitual" data-id="' + r.id + '"><span class="grow">' + esc(r.name) + '<span class="sub">' + (isWeekly(r) ? weekTarget(r) + 'x a week · ' : r.per > 1 ? r.per + 'x a day · ' : '') + (r.time ? esc(r.time) + ' · ' : '') + flameLabel(st) + ' · cast ' + st.total + (rankOf(st.total) ? ' · ' + rankOf(st.total).toLowerCase() : '') + '</span></span><span class="meta">' + strip(r, 7) + '</span></button>';
 }
 function strip(r, n) {
   const t = today();
@@ -1516,6 +1618,7 @@ function strip(r, n) {
     let c = 'none';
     if (d < r.created && !r.casts[d]) c = 'before';
     else if (r.casts[d]) c = 'cast';
+    else if (isWeekly(r)) c = isRestWeek(r, weekStart(d)) ? 'rest' : d === t ? 'open' : 'off';
     else if (r.rests[d]) c = 'rest';
     else if (r.hits && r.hits[d] && r.hits[d].length) c = 'part';
     else if (d === t) c = 'open';
@@ -1547,13 +1650,44 @@ VIEWS.errand = function (v) {
   return h;
 };
 
+function weeklyRitualView(r, st, rank) {
+  const alive = st.status === 'burning' || st.status === 'flickering';
+  const rem = weekReminder(r, st);
+  const ws = weekStart(today());
+  const series = [];
+  for (let i = 11; i >= 0; i--) series.push(sessionsInWeek(r, addDays(ws, -7 * i)));
+  let h = win(esc(r.name.toUpperCase()),
+    '<div class="statgrid">' +
+    '<div><span class="bignum">' + (alive ? st.flame : '-') + '</span><span class="sub">' + (st.status === 'unlit' ? 'unlit' : st.status === 'embers' ? 'embers' : 'flame, weeks' + (st.status === 'flickering' ? ', flickering' : '')) + '</span></div>' +
+    '<div><span class="bignum">' + st.longest + '</span><span class="sub">longest, weeks</span></div>' +
+    '<div><span class="bignum">' + st.total + '</span><span class="sub">sessions</span></div></div>' +
+    '<p class="small">' + (rank ? 'Rank: ' + rank + (r.spellName ? ' · ' + esc(r.spellName) : '') : 'Learned at 10 sessions: ' + (10 - st.total) + ' to go.') + (st.total >= 10 && st.total < 66 ? ' Rooted at 66.' : '') + '</p>' +
+    '<p class="lbl">THIS WEEK</p><p class="bigline nomargin">' + st.week + ' of ' + st.target + (st.restWeek ? ' · rest week' : '') + '</p>' +
+    (rem && !st.restWeek ? '<p class="small">' + cap(rem) + '.</p>' : '') +
+    '<div class="btns"><button class="btn solid" data-a="castPlus" data-id="' + r.id + '">+1 SESSION TODAY</button><button class="btn" data-a="castMinus" data-id="' + r.id + '"' + (st.castToday ? '' : ' disabled') + '>-1</button></div>' +
+    '<p class="lbl">LAST 14 DAYS</p>' + strip(r, 14) +
+    '<p class="dim small">Square: a session. Faint dot: no session, which is fine. Bar: a rest week.</p>' +
+    '<p class="lbl">SESSIONS, LAST 12 WEEKS</p>' + bars(series, st.target) +
+    '<p class="small">Target met in ' + st.full + ' of ' + plural(st.judged, 'week') + ' so far.</p>' +
+    '<p class="dim small">A full week grows the flame by a week. A week with at least one session keeps it alight. An empty week is forgiven once; two in a row put it out. A rest week keeps the flame as it is. This week is judged when it ends.</p>');
+  const next = addDays(ws, 7);
+  const marked = (r.restWeeks || []).slice().sort().reverse();
+  h += win('REST WEEKS',
+    '<p class="dim small">Illness, travel, a week off. A rest week keeps the flame exactly as it is. Any week can be marked, past or coming.</p>' +
+    '<div class="btns"><button class="btn' + (isRestWeek(r, ws) ? ' solid' : '') + '" data-a="restWeek" data-id="' + r.id + '" data-v="' + ws + '" aria-pressed="' + isRestWeek(r, ws) + '">' + (isRestWeek(r, ws) ? 'THIS WEEK: RESTING' : 'REST THIS WEEK') + '</button>' +
+    '<button class="btn' + (isRestWeek(r, next) ? ' solid' : '') + '" data-a="restWeek" data-id="' + r.id + '" data-v="' + next + '" aria-pressed="' + isRestWeek(r, next) + '">' + (isRestWeek(r, next) ? 'NEXT WEEK: RESTING' : 'REST NEXT WEEK') + '</button></div>' +
+    '<label class="lbl" for="rw-date">Another week: pick any day in it</label><div class="inline"><input id="rw-date" type="date" data-bind="rw-date" value="' + esc(fval('rw-date')) + '"><button class="btn" data-a="restWeek" data-id="' + r.id + '" data-v="pick">MARK</button></div>' +
+    (marked.length ? '<p class="lbl">MARKED</p>' + marked.slice(0, 12).map((w) => '<div class="row tight"><span class="grow">' + fmtDate(w) + ' to ' + fmtDate(addDays(w, 6)) + (w === ws ? ' <span class="dim">this week</span>' : w > ws ? ' <span class="dim">coming</span>' : '') + '</span><button class="lnk dim" data-a="restWeek" data-id="' + r.id + '" data-v="' + w + '" aria-label="Unmark the week of ' + fmtDate(w) + '">x</button></div>').join('') : ''));
+  return h;
+}
 VIEWS.ritual = function (v) {
   const r = S.rituals.find((x) => x.id === v.id);
   if (!r) return backRow() + '<p class="dim">This ritual is gone.</p>';
   const st = ritualStats(r);
   const rank = rankOf(st.total);
   let h = backRow();
-  h += win(esc(r.name.toUpperCase()),
+  if (st.weekly) h += weeklyRitualView(r, st, rank);
+  else h += win(esc(r.name.toUpperCase()),
     '<div class="statgrid">' +
     '<div><span class="bignum">' + (st.status === 'burning' || st.status === 'flickering' ? st.flame : '-') + '</span><span class="sub">' + (st.status === 'unlit' ? 'unlit' : st.status === 'embers' ? 'embers' : 'flame' + (st.status === 'flickering' ? ', flickering' : '')) + '</span></div>' +
     '<div><span class="bignum">' + st.longest + '</span><span class="sub">longest flame</span></div>' +
@@ -1569,7 +1703,13 @@ VIEWS.ritual = function (v) {
     '<label for="r-name" class="lbl">Ritual</label><input id="r-name" type="text" maxlength="80" data-bind="r-name" value="' + esc(fval('r-name', r.name)) + '">' +
     '<label for="r-least" class="lbl">The least that still counts</label><input id="r-least" type="text" maxlength="80" placeholder="e.g. one page" data-bind="r-least" value="' + esc(fval('r-least', r.least)) + '">' +
     '<label for="r-cue" class="lbl">When and where</label><input id="r-cue" type="text" maxlength="120" placeholder="e.g. in bed, after brushing teeth" data-bind="r-cue" value="' + esc(fval('r-cue', r.cue)) + '">' +
-    '<label for="r-per" class="lbl">Times a day before it counts (e.g. 2 for brushing teeth)</label><input id="r-per" type="number" min="1" max="12" inputmode="numeric" data-bind="r-per" value="' + esc(fval('r-per', r.per || 1)) + '">' +
+    (function () {
+      const mode = fval('r-mode', r.mode || 'daily');
+      return '<p class="lbl">HOW OFTEN</p><div class="seg" role="group" aria-label="How often">' + [['daily', 'EVERY DAY'], ['weekly', 'TIMES A WEEK']].map((x) => '<button class="segb' + (mode === x[0] ? ' on' : '') + '" data-a="setForm" data-k="r-mode" data-v="' + x[0] + '" aria-pressed="' + (mode === x[0]) + '">' + x[1] + '</button>').join('') + '</div>' +
+        (mode === 'weekly'
+          ? '<label for="r-week" class="lbl">Sessions a week (e.g. 4 for workouts)</label><input id="r-week" type="number" min="1" max="14" inputmode="numeric" data-bind="r-week" value="' + esc(fval('r-week', weekTarget(r))) + '">'
+          : '<label for="r-per" class="lbl">Times a day before it counts (e.g. 2 for brushing teeth)</label><input id="r-per" type="number" min="1" max="12" inputmode="numeric" data-bind="r-per" value="' + esc(fval('r-per', r.per || 1)) + '">');
+    })() +
     '<label for="r-time" class="lbl">Time (reminders arrive in the Android app)</label><input id="r-time" type="time" data-bind="r-time" value="' + esc(fval('r-time', r.time || '')) + '">' +
     (st.total >= 10 ? '<label for="r-spell" class="lbl">Its name in the Grimoire</label><input id="r-spell" type="text" maxlength="80" data-bind="r-spell" value="' + esc(fval('r-spell', r.spellName || '')) + '">' : '') +
     '<div class="btns"><button class="btn solid" data-a="saveRitual" data-id="' + r.id + '">SAVE</button><button class="btn" data-a="archiveRitual" data-id="' + r.id + '">' + (r.archived ? 'WAKE IT' : 'LET IT REST') + '</button></div>');
@@ -2116,6 +2256,14 @@ VIEWS.day = function (v) {
     h += win('RITUALS', rits.map((r) => {
       const hits = (r.hits && r.hits[d]) ? r.hits[d].length : 0;
       let mark = '[ ]', note = d === t ? 'not yet' : 'missed';
+      if (isWeekly(r)) {
+        const n = sessionsOn(r, d), w = weekStart(d);
+        const wk = sessionsInWeek(r, w);
+        if (n) { mark = '[x]'; note = (n > 1 ? n + ' sessions, first at ' : 'session at ') + r.casts[d]; }
+        else { mark = '[-]'; note = 'no session'; }
+        note += ' · ' + (isRestWeek(r, w) ? 'rest week' : 'week ' + wk + ' of ' + weekTarget(r));
+        return '<div class="row tight"><span class="mark">' + mark + '</span><span class="grow">' + esc(r.name) + '</span><span class="meta">' + note + '</span></div>';
+      }
       if (r.casts[d]) { mark = '[x]'; note = 'cast at ' + r.casts[d]; }
       else if (r.rests && r.rests[d]) { mark = '[r]'; note = 'rest day'; }
       else if (hits) { mark = '[' + hits + '/' + (r.per || 1) + ']'; note = 'started'; }
@@ -2282,8 +2430,9 @@ A.add = (el) => {
   if (!text) return;
   const kind = UI.form.addKind || 'errand';
   if (kind === 'ritual') {
-    S.rituals.push(newRitual(text));
-    say('A new ritual: ' + text + '. Its flame lights on the first cast.');
+    const nr = newRitual(text);
+    S.rituals.push(nr);
+    say('A new ritual: ' + nr.name + (isWeekly(nr) ? ', ' + nr.week + ' times a week' : '') + '. Its flame lights on the first cast.');
   } else {
     const when = UI.form.addWhen || (el.dataset.where === 'camp' ? 'today' : 'someday');
     const date = when === 'today' ? today() : when === 'tomorrow' ? addDays(today(), 1) : null;
@@ -2315,11 +2464,28 @@ A.undo = () => {
 // Tap on a ritual: adds one cast until the day is done; tapping a finished ritual takes one back.
 A.cast = (el) => {
   const r = S.rituals.find((x) => x.id === el.dataset.id); if (!r) return;
-  hitRitual(r, r.casts[today()] ? -1 : 1);
+  if (isWeekly(r)) weeklyHit(r, r.casts[today()] ? -1 : 1);
+  else hitRitual(r, r.casts[today()] ? -1 : 1);
   render();
 };
-A.castPlus = (el) => { const r = S.rituals.find((x) => x.id === el.dataset.id); if (r) { hitRitual(r, 1); render(); } };
-A.castMinus = (el) => { const r = S.rituals.find((x) => x.id === el.dataset.id); if (r) { hitRitual(r, -1); render(); } };
+A.castPlus = (el) => { const r = S.rituals.find((x) => x.id === el.dataset.id); if (r) { if (isWeekly(r)) weeklyHit(r, 1); else hitRitual(r, 1); render(); } };
+A.castMinus = (el) => { const r = S.rituals.find((x) => x.id === el.dataset.id); if (r) { if (isWeekly(r)) weeklyHit(r, -1); else hitRitual(r, -1); render(); } };
+// Rest weeks: this week, next week, or the week of any chosen date. Tapping a marked week unmarks it.
+A.restWeek = (el) => {
+  const r = S.rituals.find((x) => x.id === el.dataset.id); if (!r) return;
+  let ws = el.dataset.v;
+  if (ws === 'pick') {
+    const d = UI.form['rw-date'];
+    if (!d) { toast('Pick a day in the week first.'); return; }
+    ws = weekStart(d);
+    delete UI.form['rw-date'];
+  }
+  if (!r.restWeeks) r.restWeeks = [];
+  const label = 'the week of ' + fmtDate(ws);
+  if (r.restWeeks.includes(ws)) { r.restWeeks = r.restWeeks.filter((x) => x !== ws); say(r.name + ': ' + label + ' is no longer a rest week.'); }
+  else { r.restWeeks.push(ws); r.restWeeks.sort(); say(r.name + ': ' + label + ' is a rest week. The flame is safe.'); }
+  save(); render();
+};
 A.rest = (el) => {
   const r = S.rituals.find((x) => x.id === el.dataset.id); if (!r) return;
   const t = today();
@@ -2477,10 +2643,22 @@ A.saveRitual = (el) => {
   if (f['r-cue'] !== undefined) r.cue = f['r-cue'].trim();
   if (f['r-time'] !== undefined) r.time = f['r-time'] || null;
   if (f['r-spell'] !== undefined) r.spellName = f['r-spell'].trim() || null;
-  if (f['r-per'] !== undefined) {
-    const n = parseInt(f['r-per'], 10);
-    const per = n > 0 ? Math.min(n, 12) : 1;
-    if (per !== r.per) { r.per = per; rejudgeToday(r); }
+  const mode = f['r-mode'] !== undefined ? f['r-mode'] : (r.mode || 'daily');
+  if (mode === 'weekly') {
+    if (r.mode !== 'weekly') {
+      // Past days keep their casts; a day that took several taps as a daily ritual counts as one session.
+      Object.keys(r.hits || {}).forEach((d) => { if (r.casts[d]) r.hits[d] = [r.casts[d]]; else delete r.hits[d]; });
+      r.per = 1;
+    }
+    r.mode = 'weekly';
+    if (f['r-week'] !== undefined) { const n = parseInt(f['r-week'], 10); r.week = n > 0 ? Math.min(n, 14) : 1; }
+  } else {
+    if (r.mode === 'weekly') { r.mode = 'daily'; Object.keys(r.hits || {}).forEach((d) => { if (r.casts[d]) r.hits[d] = [r.casts[d]]; }); }
+    if (f['r-per'] !== undefined) {
+      const n = parseInt(f['r-per'], 10);
+      const per = n > 0 ? Math.min(n, 12) : 1;
+      if (per !== r.per) { r.per = per; rejudgeToday(r); }
+    }
   }
   save(); UI.form = {}; render(); toast('Saved.');
 };
