@@ -16,6 +16,8 @@ Android phone as an installed web app served by GitHub Pages from `docs/`.
 - `lij.snapshots.v1` keeps copies from before the last 3 updates (restorable in Options). Keep that working.
 - Leagues anti-cheat: only a day that ends with a real deed on the record counts; undo removes it. Steps and weight
   never count toward leagues (statistics and mana only). Weight progress is judged by the 7-day average.
+  Ritual sessions added later for a past day are cast events with `late: true`: they count for the week, flame and
+  mana, never for that day's league, and roll no spell. A session logged on its own day is locked once the day ends.
 - Mana is derived from the record. If the way it is counted changes, bump `MANA_RULES` so releases are only compared
   with releases counted the same way. Mage classes are granted only at a release and never taken away (`S.mana.rank`).
 - Keep tests and example text free of Daniel's personal details: this repository is public.

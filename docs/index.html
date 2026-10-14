@@ -302,10 +302,18 @@ pre.companion { flex: 0 0 auto; font-size: 0.85em; line-height: 1.05; overflow: 
 .updbar { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 16px 0; padding: 6px 10px; border: 1px solid var(--fg); font-size: 0.8em; letter-spacing: 1px; }
 .updbar .btn { flex: 0 0 auto; }
 
+/* the week's days on a weekly ritual */
+.weekdays { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin: 8px 0 4px; }
+.wd { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-height: 48px; padding: 2px 0; border: 1px solid var(--dim); background: none; color: var(--fg); font: inherit; text-shadow: inherit; cursor: pointer; border-radius: 0; }
+.wd.on { background: var(--fg); color: var(--ink); text-shadow: none; border-color: var(--fg); }
+.wd.today { outline: 2px solid var(--fg); outline-offset: 1px; }
+.wd[disabled] { color: var(--faint); border-color: var(--faint); cursor: default; }
+.wd .wdn { font-size: 0.8em; min-height: 1em; }
+
 </style>
 <div id="app"></div>
 <script>
-const BUILD = 'ffdaf20c0f';
+const BUILD = 'ed7aac151c';
 const PWA = true;
 /* Spells. Rare and legendary spells are hand-written.
    Common and uncommon spells are generated from typed parts (see SPELLGEN). */
@@ -1561,7 +1569,8 @@ function act(kind, extra) { if (kind) event(kind, extra); }
    a cast (or a partial cast), a finished errand (or one more of an errand done several times), a peek, a scouted or cleared floor, a hex caught, broken or revisited,
    a sealed or reviewed worry, a prophecy written or judged, a steadying or suppression session,
    the inner weather, or the journal line. Undoing an action removes it from the record, so it stops counting.
-   Writing down plans alone (adding errands or rituals) does not count.
+   Writing down plans alone (adding errands or rituals) does not count, and neither does a session added afterwards
+   for a past day (e.late): the day had already ended without it.
    Steps walked are a separate measurement: they never count toward a league, only toward statistics and mana. */
 const DEED_KINDS = new Set(['cast', 'errand', 'errand_part', 'peek', 'scout', 'floor', 'dispel', 'hex_catch', 'hex_revisit', 'seal', 'review', 'steady', 'prophecy', 'prophecy_new', 'suppress']);
 let deedCache = { key: null, map: null };
@@ -1570,7 +1579,7 @@ function deedIndex() {
   if (deedCache.key === key && deedCache.map) return deedCache.map;
   const m = {};
   const add = (d) => { m[d] = (m[d] || 0) + 1; };
-  S.events.forEach((e) => { if (DEED_KINDS.has(e.k)) add(e.d); });
+  S.events.forEach((e) => { if (DEED_KINDS.has(e.k) && !e.late) add(e.d); });
   S.rituals.forEach((r) => { Object.keys(r.hits || {}).forEach((d) => { if (r.hits[d].length && !r.casts[d]) add(d); }); });
   Object.keys(S.days).forEach((d) => { const x = S.days[d]; if (x.w != null) add(d); if (x.l) add(d); });
   deedCache = { key: key, map: m };
@@ -1946,7 +1955,8 @@ function weeklyStats(r) {
     const n = sessionsInWeek(r, w);
     const partialFirst = w === firstWeek && r.created > w && !(firstCast && firstCast < r.created);
     if (n >= T) { full++; judged++; if (!alive) { alive = true; flame = 0; } flame++; miss = 0; longest = Math.max(longest, flame); }
-    else if (w === cur || (partialFirst && n === 0)) { /* not judged yet, or a first week that began part-way */ }
+    else if (w === cur) { if (n > 0) { if (!alive) { alive = true; flame = 0; } miss = 0; } /* not judged until it ends */ }
+    else if (partialFirst && n === 0) { /* a first week that began part-way */ }
     else if (isRestWeek(r, w)) { miss = 0; }
     else if (n > 0) { judged++; if (!alive) { alive = true; flame = 0; } miss = 0; }
     else { judged++; if (alive) { miss++; if (miss > 1) { alive = false; flame = 0; miss = 0; } } }
@@ -1990,6 +2000,24 @@ function weeklyHit(r, dir) {
     say(r.name + ': ' + st.week + ' of ' + st.target + ' this week.');
   }
   save();
+}
+/* A session done on an earlier day but not logged then ("added later"). It counts for that week, the flame, the total
+   and mana, but not for that day's league, and it finds no spell. A session logged on its own day cannot be removed
+   once the day has ended, the same rule as every other deed. */
+function isLate(r, d) { return r.casts[d] === 'late'; }
+function addLateSession(r, d) {
+  r.casts[d] = 'late';
+  r.hits[d] = ['late'];
+  S.events.push({ k: 'cast', rid: r.id, d: d, t: Date.now(), late: true });
+  say(r.name + ': a session added for ' + fmtDate(d) + '.');
+  const st = ritualStats(r);
+  if (st.total === 10 && !r.spellName) UI.modals.push({ type: 'learned', rid: r.id });
+  if (st.total === 66) say(r.name + ' is rooted.');
+}
+function removeLateSession(r, d) {
+  delete r.casts[d]; delete r.hits[d];
+  S.events = S.events.filter((e) => !(e.k === 'cast' && e.rid === r.id && e.d === d && e.late));
+  say(r.name + ': the session added for ' + fmtDate(d) + ' is removed.');
 }
 // After a cast or a session: the milestone messages that depend on the total.
 function afterCast(r) {
@@ -2603,7 +2631,7 @@ function observations() {
     }
   }
   S.rituals.forEach((r) => {
-    const times = Object.values(r.casts).filter(Boolean);
+    const times = Object.values(r.casts).filter((x) => /^\d\d:\d\d$/.test(x || ''));
     if (times.length >= 10) {
       const hours = {};
       times.forEach((t) => { const h = Number(t.split(':')[0]); hours[h] = (hours[h] || 0) + 1; });
@@ -2904,6 +2932,20 @@ VIEWS.errand = function (v) {
   return h;
 };
 
+function weekDayButtons(r) {
+  const t = today(), ws = weekStart(t);
+  const names = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  let h = '<div class="weekdays" role="group" aria-label="Sessions this week">';
+  for (let i = 0; i < 7; i++) {
+    const d = addDays(ws, i), n = sessionsOn(r, d);
+    const future = d > t;
+    const locked = n && d < t && !isLate(r, d);
+    h += '<button class="wd' + (n ? ' on' : '') + (d === t ? ' today' : '') + '" data-a="toggleSession" data-id="' + r.id + '" data-d="' + d + '"' + (future ? ' disabled' : '') +
+      ' aria-pressed="' + !!n + '" aria-label="' + fmtFull(d) + (n ? ', ' + plural(n, 'session') + (isLate(r, d) ? ', added later' : '') + (locked ? ', recorded on the day' : '') : ', no session') + '">' +
+      '<span>' + names[i] + '</span><span class="wdn">' + (n ? (n > 1 ? n : (isLate(r, d) ? '+' : '*')) : (future ? '' : '-')) + '</span></button>';
+  }
+  return h + '</div>';
+}
 function weeklyRitualView(r, st, rank) {
   const alive = st.status === 'burning' || st.status === 'flickering';
   const rem = weekReminder(r, st);
@@ -2918,6 +2960,8 @@ function weeklyRitualView(r, st, rank) {
     '<p class="small">' + (rank ? 'Rank: ' + rank + (r.spellName ? ' · ' + esc(r.spellName) : '') : 'Learned at 10 sessions: ' + (10 - st.total) + ' to go.') + (st.total >= 10 && st.total < 66 ? ' Rooted at 66.' : '') + '</p>' +
     '<p class="lbl">THIS WEEK</p><p class="bigline nomargin">' + st.week + ' of ' + st.target + (st.restWeek ? ' · rest week' : '') + '</p>' +
     (rem && !st.restWeek ? '<p class="small">' + cap(rem) + '.</p>' : '') +
+    weekDayButtons(r) +
+    '<p class="dim small">Tap a day to add a session you did but did not log. A session added later counts for the week, the flame and mana, but not for that day\'s league. For older weeks, open the day from the calendar on the Road.</p>' +
     '<div class="btns"><button class="btn solid" data-a="castPlus" data-id="' + r.id + '">+1 SESSION TODAY</button><button class="btn" data-a="castMinus" data-id="' + r.id + '"' + (st.castToday ? '' : ' disabled') + '>-1</button></div>' +
     '<p class="lbl">LAST 14 DAYS</p>' + strip(r, 14) +
     '<p class="dim small">Square: a session. Faint dot: no session, which is fine. Bar: a rest week.</p>' +
@@ -3505,7 +3549,7 @@ VIEWS.day = function (v) {
   h += win('STEPS AND WEIGHT', '<p class="lbl">STEPS</p>' + stepsField('dsteps', d, rec) + '<p class="lbl">WEIGHT, KG</p>' + kgField('dkg', d, rec) +
     '<p class="dim small">' + 'Steps and weight count toward statistics and mana, not leagues. Leave a field empty and save to clear it.' + '</p>');
 
-  const rits = S.rituals.filter((r) => r.created <= d || r.casts[d] || (r.hits && r.hits[d]));
+  const rits = S.rituals.filter((r) => r.created <= d || r.casts[d] || (r.hits && r.hits[d]) || (isWeekly(r) && weekStart(r.created) <= d));
   if (rits.length) {
     h += win('RITUALS', rits.map((r) => {
       const hits = (r.hits && r.hits[d]) ? r.hits[d].length : 0;
@@ -3513,9 +3557,12 @@ VIEWS.day = function (v) {
       if (isWeekly(r)) {
         const n = sessionsOn(r, d), w = weekStart(d);
         const wk = sessionsInWeek(r, w);
-        if (n) { mark = '[x]'; note = (n > 1 ? n + ' sessions, first at ' : 'session at ') + r.casts[d]; }
+        if (n && isLate(r, d)) { mark = '[+]'; note = 'session, added later'; }
+        else if (n) { mark = '[x]'; note = (n > 1 ? n + ' sessions, first at ' : 'session at ') + r.casts[d]; }
         else { mark = '[-]'; note = 'no session'; }
         note += ' · ' + (isRestWeek(r, w) ? 'rest week' : 'week ' + wk + ' of ' + weekTarget(r));
+        const canToggle = d < t && (!n || isLate(r, d));
+        if (canToggle) return '<button class="row item" data-a="toggleSession" data-id="' + r.id + '" data-d="' + d + '" aria-label="' + (n ? 'Remove the session added later for ' : 'Add a session for ') + esc(r.name) + '"><span class="mark">' + mark + '</span><span class="grow">' + esc(r.name) + '<span class="sub">' + (n ? 'tap to remove' : 'did it but did not log it? tap to add') + '</span></span><span class="meta">' + note + '</span></button>';
         return '<div class="row tight"><span class="mark">' + mark + '</span><span class="grow">' + esc(r.name) + '</span><span class="meta">' + note + '</span></div>';
       }
       if (r.casts[d]) { mark = '[x]'; note = 'cast at ' + r.casts[d]; }
@@ -3724,6 +3771,17 @@ A.cast = (el) => {
 };
 A.castPlus = (el) => { const r = S.rituals.find((x) => x.id === el.dataset.id); if (r) { if (isWeekly(r)) weeklyHit(r, 1); else hitRitual(r, 1); render(); } };
 A.castMinus = (el) => { const r = S.rituals.find((x) => x.id === el.dataset.id); if (r) { if (isWeekly(r)) weeklyHit(r, -1); else hitRitual(r, -1); render(); } };
+// A day button on the weekly ritual screen or a day card: today works like the camp tap; an earlier day adds or
+// removes a session added later.
+A.toggleSession = (el) => {
+  const r = S.rituals.find((x) => x.id === el.dataset.id); if (!r || !isWeekly(r)) return;
+  const d = el.dataset.d, t = today();
+  if (!d || d > t) return;
+  if (d === t) { weeklyHit(r, r.casts[t] ? -1 : 1); render(); return; }
+  if (r.casts[d] && !isLate(r, d)) { toast('A session logged on its own day stays on the record.'); return; }
+  if (r.casts[d]) removeLateSession(r, d); else addLateSession(r, d);
+  save(); render();
+};
 // Rest weeks: this week, next week, or the week of any chosen date. Tapping a marked week unmarks it.
 A.restWeek = (el) => {
   const r = S.rituals.find((x) => x.id === el.dataset.id); if (!r) return;
