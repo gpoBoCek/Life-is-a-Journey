@@ -310,10 +310,14 @@ pre.companion { flex: 0 0 auto; font-size: 0.85em; line-height: 1.05; overflow: 
 .wd[disabled] { color: var(--faint); border-color: var(--faint); cursor: default; }
 .wd .wdn { font-size: 0.8em; min-height: 1em; }
 
+/* the carried-errand gate */
+.win.gate { border-color: var(--fg); }
+.gatelist .row.item { padding-top: 10px; padding-bottom: 10px; }
+
 </style>
 <div id="app"></div>
 <script>
-const BUILD = 'ed7aac151c';
+const BUILD = 'ec5d8538b0';
 const PWA = true;
 /* Spells. Rare and legendary spells are hand-written.
    Common and uncommon spells are generated from typed parts (see SPELLGEN). */
@@ -1390,7 +1394,7 @@ function freshState() {
     createdAt: Date.now(),
     savedAt: 0,
     seed: (Math.random() * 2147483647) | 0,
-    settings: { phosphor: 'orange', scan: true, glow: true, size: 'm', title: 'LIFE IS A JOURNEY', lantern: '19:00', dayTurn: 0, dayOne: null, companion: true },
+    settings: { phosphor: 'orange', scan: true, glow: true, size: 'm', title: 'LIFE IS A JOURNEY', lantern: '19:00', dayTurn: 0, dayOne: null, companion: true, gateDays: 3 },
     rolls: {},
     errands: [],
     rituals: [],
@@ -2152,8 +2156,20 @@ function errandStep(e, dir) {
   say(e.text + ': ' + e.got + ' of ' + need + '.');
   save();
 }
+/* Carried errands. An errand whose day has passed stays at the top of camp, counting the days it has been carried;
+   its original date is kept. Once it has been carried for S.settings.gateDays days (3 by default, 0 for off),
+   camp opens on a decision about it before anything else. The gate asks for a choice, not for the errand itself:
+   do it, look at it for two minutes, make it smaller, make it a chest, move it once, take its date away, or let it go.
+   Facing it (a peek or a smaller first step) restarts its count from today. The rest of the app is never locked. */
+function carriedDays(e) { const t = today(); return e.date && e.date < t ? daysBetween(e.date, t) : 0; }
+function gateErrands() {
+  const n = S.settings.gateDays;
+  if (!n) return [];
+  return S.errands.filter((e) => !e.dread && carriedDays(e) >= n).sort((a, b) => a.date.localeCompare(b.date));
+}
 function completeErrand(e) {
   const snap = JSON.parse(JSON.stringify(e));
+  const carried = carriedDays(e);
   const idx = S.errands.indexOf(e);
   const need = errandNeed(e);
   if (e.repeat) {
@@ -2163,7 +2179,9 @@ function completeErrand(e) {
   } else {
     S.errands.splice(idx, 1);
   }
-  act('errand', need > 1 ? { id: e.id, text: e.text, of: need } : { id: e.id, text: e.text });
+  const rec = need > 1 ? { id: e.id, text: e.text, of: need } : { id: e.id, text: e.text };
+  if (carried) rec.carried = carried;
+  act('errand', rec);
   say(e.text + ': done.' + (e.repeat ? ' Back on ' + fmtDate(e.date) + '.' : ''));
   maybeSpell('errand', 'errand:' + e.id + ':' + today());
   showToast('Done: ' + e.text, { kind: 'errand', snap: snap, idx: idx, repeat: !!e.repeat });
@@ -2772,7 +2790,35 @@ function revisitWindow() {
   const shown = rows.slice(0, 6);
   return win('TO REVISIT', shown.join('') + (rows.length > shown.length ? '<p class="dim small">+ ' + (rows.length - shown.length) + ' more under the Arts.</p>' : '') + '<p class="dim small">Nothing here is late. It waits until you are ready.</p>');
 }
+function gateHtml(e, n) {
+  const cd = carriedDays(e);
+  const mode = UI.gateMode && UI.gateMode.id === e.id ? UI.gateMode.m : null;
+  let body = '<p class="bigline nomargin">' + esc(e.text) + '</p>' +
+    '<p class="sub">due ' + fmtDate(e.date) + ' · carried ' + plural(cd, 'day') + (n > 1 ? ' · ' + n + ' waiting' : '') + '</p>' +
+    '<p>The road waits here until you choose what to do with this. Any choice is fine, including letting it go. Only leaving it unchosen is not.</p>';
+  if (mode === 'smaller') {
+    body += '<label class="lbl" for="g-step">What is the smallest first step? Something for today.</label><div class="inline"><input id="g-step" type="text" maxlength="140" placeholder="e.g. find the form" data-bind="g-step" data-enter="gateSmaller" data-id="' + e.id + '" value="' + esc(fval('g-step')) + '"><button class="btn" data-a="gateSmaller" data-id="' + e.id + '">ADD</button></div>' +
+      '<button class="lnk dim small" data-a="gateMode" data-id="' + e.id + '" data-v="">BACK TO THE CHOICES</button>';
+  } else if (mode === 'move') {
+    body += '<p class="lbl">MOVE IT TO</p><div class="btns">' + [[1, 'TOMORROW'], [3, 'IN 3 DAYS'], [7, 'NEXT WEEK']].map((x) => '<button class="btn" data-a="gateMove" data-id="' + e.id + '" data-v="' + x[0] + '">' + x[1] + '</button>').join('') + '</div>' +
+      '<p class="dim small">An errand can be moved from here once. If it comes back, the other choices remain.</p><button class="lnk dim small" data-a="gateMode" data-id="' + e.id + '" data-v="">BACK TO THE CHOICES</button>';
+  } else {
+    const opt = (a, label, sub, solid) => '<button class="row item" data-a="' + a + '" data-id="' + e.id + '"><span class="grow' + (solid ? '' : '') + '">' + label + '<span class="sub">' + sub + '</span></span></button>';
+    body += '<div class="gatelist">' +
+      opt('gateDone', 'IT IS DONE', 'Mark it done.') +
+      opt('peekStart', 'LOOK AT IT FOR 2 MINUTES', 'Open it, start it, read it. Two minutes counts, finished or not.') +
+      opt('gateMode" data-v="smaller', 'MAKE IT SMALLER', 'Write the first small step as a new errand for today.') +
+      opt('gateChest', 'MAKE IT A CHEST', 'If you dread it, it becomes a mimic to peek into.') +
+      (!e.moved ? opt('gateMode" data-v="move', 'MOVE IT', 'To another day. Once.') : '') +
+      opt('gateSomeday', 'NO DATE FOR NOW', 'It stays on the board without a day, and is no longer carried.') +
+      opt('gateDrop', UI.confirm === 'gatedrop' + e.id ? 'TAP AGAIN TO LET IT GO' : 'LET IT GO', 'Not everything written down needs doing. It leaves the board.') +
+      '</div>';
+  }
+  return win('THE ROAD IS BLOCKED', body, 'gate') + '<p class="dim small">The other screens are open as always. Camp returns once this is decided. You can change how many days this waits for in Options.</p>';
+}
 function renderCamp() {
+  const gate = gateErrands();
+  if (gate.length) return gateHtml(gate[0], gate.length);
   const now = new Date();
   const tod = todOf(now);
   const lines = CAMP_LINES[tod];
@@ -2848,7 +2894,9 @@ function renderCamp() {
 function errandRow(e) {
   const meta = [];
   if (e.time) meta.push(esc(e.time));
-  if (e.date && e.date !== today()) meta.push(fmtDate(e.date));
+  const cd = carriedDays(e);
+  if (cd) meta.push('carried ' + plural(cd, 'day'));
+  else if (e.date && e.date !== today()) meta.push(fmtDate(e.date));
   if (e.list && e.list.length) meta.push(e.list.filter((x) => x.done).length + '/' + e.list.length);
   if (e.repeat) meta.push('every ' + plural(e.repeat, 'day'));
   const need = errandNeed(e);
@@ -3410,7 +3458,14 @@ function renderRoad() {
   const sky = weeklySeries((s) => { let n = 0; for (let i = 0; i < 7; i++) { const d = S.days[addDays(s, i)]; if (d && d.w != null && d.w <= 1) n++; } return n; }, 12);
   const compare = (arr, unit) => started >= 56 ? '<p class="small">First four weeks shown: ' + round1(avg(arr.slice(0, 4))) + ' ' + unit + '. Latest four: ' + round1(avg(arr.slice(8))) + '.</p>' : '<p class="dim small">Comparisons appear after eight weeks on the road.</p>';
   h += win('RITUALS CAST, PER WEEK', bars(casts) + compare(casts, 'a week'));
-  h += win('ERRANDS DONE, PER WEEK', bars(errs) + compare(errs, 'a week'));
+  h += win('ERRANDS DONE, PER WEEK', bars(errs) + compare(errs, 'a week') + (function () {
+    const done = S.events.filter((e) => e.k === 'errand');
+    if (done.length < 5) return '';
+    const onTime = done.filter((e) => !e.carried).length;
+    const carried = done.filter((e) => e.carried);
+    const dropped = S.events.filter((e) => e.k === 'errand_drop').length;
+    return '<p class="small">Done on their day or earlier: ' + pct(onTime / done.length) + '.' + (carried.length ? ' Carried before done: ' + carried.length + ', ' + round1(avg(carried.map((e) => e.carried))) + ' days on average.' : '') + (dropped ? ' Let go: ' + dropped + '.' : '') + '</p>';
+  })());
   h += stepsWindow(started);
   h += weightWindow();
   h += win('CLEAR SKIES, PER WEEK', bars(sky, 7) + '<p class="dim small">Days a week with clear or fair inner weather.</p>');
@@ -3574,7 +3629,8 @@ VIEWS.day = function (v) {
 
   const ev = S.events.filter((e) => e.d === d);
   const items = [];
-  ev.filter((e) => e.k === 'errand').forEach((e) => items.push(['Errand done', (e.text ? esc(e.text) : 'an errand') + (e.of ? ' · all ' + e.of : '')]));
+  ev.filter((e) => e.k === 'errand').forEach((e) => items.push(['Errand done', (e.text ? esc(e.text) : 'an errand') + (e.of ? ' · all ' + e.of : '') + (e.carried ? ' · after ' + plural(e.carried, 'day') + ' carried' : '')]));
+  ev.filter((e) => e.k === 'errand_drop').forEach((e) => items.push(['Errand let go', esc(e.text || 'an errand')]));
   const parts = {};
   ev.filter((e) => e.k === 'errand_part').forEach((e) => { parts[e.id] = e; });
   Object.keys(parts).forEach((id) => { const e = parts[id]; items.push(['Errand progress', esc(e.text || 'an errand') + ' · ' + e.n + ' of ' + e.of]); });
@@ -3635,6 +3691,7 @@ VIEWS.options = function () {
     '<button class="btn wide" data-a="resetDays">' + (UI.confirm === 'resetdays' ? 'TAP AGAIN: TODAY BECOMES DAY 1' : 'RESET TO DAY 1') + '</button>' +
     '<p class="lbl">THE DAY TURNS AT</p><div class="seg" role="group" aria-label="The day turns at">' + [0, 2, 3, 4, 5].map((hh) => '<button class="segb' + ((S.settings.dayTurn || 0) === hh ? ' on' : '') + '" data-a="dayTurn" data-v="' + hh + '" aria-pressed="' + ((S.settings.dayTurn || 0) === hh) + '">' + pad(hh) + ':00</button>').join('') + '</div>' +
     '<p class="dim small">Anything done before this hour counts for the previous day. Useful for late nights.</p>');
+  h += win('CARRIED ERRANDS', '<p class="small nomargin">When an errand has been carried this many days, camp asks what to do with it before anything else.</p><div class="seg" role="group" aria-label="Days before camp asks">' + [[0, 'OFF'], [2, '2'], [3, '3'], [5, '5'], [7, '7']].map((x) => '<button class="segb' + ((S.settings.gateDays || 0) === x[0] ? ' on' : '') + '" data-a="gateDaysSet" data-v="' + x[0] + '" aria-pressed="' + ((S.settings.gateDays || 0) === x[0]) + '">' + x[1] + '</button>').join('') + '</div>');
   h += win('LANTERN HOUR', '<div class="inline"><label class="sr" for="o-lantern">Lantern hour</label><input id="o-lantern" type="time" data-bind="o-lantern" value="' + esc(fval('o-lantern', set.lantern)) + '"><button class="btn" data-a="saveLantern">SAVE</button></div><p class="dim small">When the jar of sealed worries opens each day.</p>');
   const snaps = Pwa.snapshots().slice().reverse();
   const canShare = PWA && navigator.canShare && (function () { try { return navigator.canShare({ files: [new File(['{}'], 'x.json', { type: 'application/json' })] }); } catch (e) { return false; } })();
@@ -3753,6 +3810,46 @@ A.errPlus = (el) => {
   if (last) { stopTickers(); UI.stack.pop(); }
   errandStep(e, 1);
   render(last);
+};
+A.gateMode = (el) => { UI.gateMode = el.dataset.v ? { id: el.dataset.id, m: el.dataset.v } : null; UI.confirm = null; render(); };
+A.gateDone = (el) => { const e = S.errands.find((x) => x.id === el.dataset.id); if (!e) return; UI.gateMode = null; completeErrand(e); render(true); };
+A.gateSmaller = (el) => {
+  const e = S.errands.find((x) => x.id === el.dataset.id); if (!e) return;
+  const step = (UI.form['g-step'] || '').trim();
+  if (!step) { toast('Write the first step first.'); return; }
+  S.errands.push(newErrand(step, today()));
+  e.date = today();
+  say(e.text + ': the first step is on today\'s list: ' + step + '.');
+  UI.gateMode = null; delete UI.form['g-step'];
+  save(); render(true);
+};
+A.gateChest = (el) => {
+  const e = S.errands.find((x) => x.id === el.dataset.id); if (!e) return;
+  e.dread = true; e.dreadAt = today();
+  say(e.text + ' becomes a chest by the road. Mimics are mostly bluff.');
+  UI.gateMode = null; save(); render(true);
+};
+A.gateMove = (el) => {
+  const e = S.errands.find((x) => x.id === el.dataset.id); if (!e || e.moved) return;
+  e.date = addDays(today(), Number(el.dataset.v) || 1); e.moved = 1;
+  say(e.text + ': moved to ' + fmtDate(e.date) + '.');
+  UI.gateMode = null; save(); render(true);
+};
+A.gateSomeday = (el) => {
+  const e = S.errands.find((x) => x.id === el.dataset.id); if (!e) return;
+  e.date = null; e.time = null;
+  say(e.text + ': on the board, with no day for now.');
+  UI.gateMode = null; save(); render(true);
+};
+A.gateDrop = (el) => {
+  const id = el.dataset.id;
+  const e = S.errands.find((x) => x.id === id); if (!e) return;
+  if (UI.confirm !== 'gatedrop' + id) { UI.confirm = 'gatedrop' + id; render(); return; }
+  UI.confirm = null; UI.gateMode = null;
+  S.errands = S.errands.filter((x) => x.id !== id);
+  act('errand_drop', { id: e.id, text: e.text, carried: carriedDays(e) });
+  say('Let go: ' + e.text + '.');
+  save(); render(true);
 };
 A.errMinus = (el) => { const e = S.errands.find((x) => x.id === el.dataset.id); if (e) { errandStep(e, -1); render(); } };
 A.undo = () => {
@@ -4043,7 +4140,7 @@ function finishPeek(v, found) {
   const e = v.id ? S.errands.find((x) => x.id === v.id) : null;
   const wait = e && e.dreadAt ? daysBetween(e.dreadAt, today()) : null;
   act('peek', { wait: wait, text: e ? e.text : (v.text || ''), exp: v.exp != null ? v.exp : null, found: found });
-  if (e) { e.dread = false; e.dreadAt = null; }
+  if (e) { e.dread = false; e.dreadAt = null; if (e.date && e.date < today()) e.date = today(); }
   const x = v.exp;
   say(found == null || x == null ? 'You opened the chest. It was smaller inside than it looked.'
     : found < x ? 'You opened the chest. You expected ' + x + ' and found ' + found + '. It was smaller inside than it looked.'
@@ -4374,6 +4471,7 @@ A.dayTurn = (el) => {
   UI.lastDay = null;
   save(); render(); toast('The day now turns at ' + pad(S.settings.dayTurn) + ':00.');
 };
+A.gateDaysSet = (el) => { S.settings.gateDays = Number(el.dataset.v) || 0; save(); render(); toast(S.settings.gateDays ? 'Camp asks after ' + plural(S.settings.gateDays, 'day') + ' carried.' : 'Carried errands no longer stop camp.'); };
 A.saveLantern = () => { const t = UI.form['o-lantern']; if (!t) return; S.settings.lantern = t; save(); render(); toast('Lantern hour set to ' + t + '.'); };
 function backupName() { return 'life-is-a-journey-' + today() + '.json'; }
 function markBackup(msg) { S.lastBackup = Date.now(); save(); toast(msg); }

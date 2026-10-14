@@ -306,3 +306,7 @@ pre.companion { flex: 0 0 auto; font-size: 0.85em; line-height: 1.05; overflow: 
 .wd.today { outline: 2px solid var(--fg); outline-offset: 1px; }
 .wd[disabled] { color: var(--faint); border-color: var(--faint); cursor: default; }
 .wd .wdn { font-size: 0.8em; min-height: 1em; }
+
+/* the carried-errand gate */
+.win.gate { border-color: var(--fg); }
+.gatelist .row.item { padding-top: 10px; padding-bottom: 10px; }

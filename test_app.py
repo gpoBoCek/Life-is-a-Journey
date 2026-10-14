@@ -40,6 +40,8 @@ with sync_playwright() as p:
     expect(page, 'Buy groceries')
     click(page, '[data-a=tick]')
     expect(page, 'UNDO')
+    # a spell may be found by chance; its window sits over the undo button
+    while page.locator('[data-a=closeModal]').count(): page.locator('[data-a=closeModal]').first.click(); page.wait_for_timeout(60)
     click(page, '[data-a=undo]')
     expect(page, 'Buy groceries')
     # add a ritual
