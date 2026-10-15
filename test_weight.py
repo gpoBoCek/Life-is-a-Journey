@@ -95,6 +95,16 @@ with sync_playwright() as p:
     page.locator('section.win', has_text='KG, 7-DAY AVERAGE').scroll_into_view_if_needed()
     page.screenshot(path=str(SHOTS / 'weight_road.png'), full_page=False)
     print('weight window:\n' + page.locator('section.win', has_text='KG, 7-DAY AVERAGE').inner_text())
+    expect(page, '7-DAY TREND'); expect(page, 'Since the first entry')
+    tr = ev(page, "() => kgTrend()")
+    print('trend:', tr)
+    check(tr is not None and abs(tr['d'] - (tr['cur'] - tr['prev'])) < 1e-9, 'trend is last 7 days against the 7 before')
+    # one odd weigh-in barely moves the trend
+    before = tr['d']
+    ev(page, "() => { S.days[today()].kg += 2; save(); }")
+    after = ev(page, "() => kgTrend().d")
+    check(abs(after - before) < 0.5, 'a single +2 kg day moves the trend by under 0.5')
+    ev(page, "() => { S.days[today()].kg -= 2; save(); render(); }")
     overflow(page, 'road')
 
     # end the goal

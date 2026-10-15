@@ -317,7 +317,7 @@ pre.companion { flex: 0 0 auto; font-size: 0.85em; line-height: 1.05; overflow: 
 </style>
 <div id="app"></div>
 <script>
-const BUILD = 'ec5d8538b0';
+const BUILD = 'b829949b87';
 const PWA = true;
 /* Spells. Rare and legendary spells are hand-written.
    Common and uncommon spells are generated from typed parts (see SPELLGEN). */
@@ -1649,6 +1649,13 @@ function kgWeek(start) {
   for (let i = 0; i < 7; i++) { const x = S.days[addDays(start, i)]; if (x && x.kg != null) { sum += x.kg; n++; } }
   return { avg: n ? sum / n : null, n: n };
 }
+// The 7-day average up to the latest entry, against the 7-day average of the week before it.
+function kgTrend() {
+  const ds = kgDates(); if (!ds.length) return null;
+  const end = ds[ds.length - 1];
+  const cur = kgAvg(end), prev = kgAvg(addDays(end, -7));
+  return cur != null && prev != null ? { d: cur - prev, cur: cur, prev: prev } : null;
+}
 function kgNow() { const ds = kgDates(); return ds.length ? kgAvg(ds[ds.length - 1]) : null; }
 function weightGoal() { return (S.weightGoals || []).find((g) => !g.to) || null; }
 function goalProgress(g) {
@@ -1696,15 +1703,16 @@ function weightWindow() {
   if (!ds.length) h += '<p class="dim small">No weight logged yet. Log it at camp, daily or whenever you like. The 7-day average smooths out the day-to-day swings.</p>';
   else {
     const now = kgNow(), first = S.days[ds[0]].kg;
+    const trend = kgTrend();
     const weeks = weeklySeries((st) => kgWeek(st), 12);
     const tw = weeks[11], lw = weeks[10];
     h += '<div class="statpair">' +
       '<div><span class="bignum">' + fmtKg(now) + '</span><span class="statlbl">KG, 7-DAY AVERAGE</span></div>' +
-      '<div><span class="bignum">' + signedKg(now - first) + '</span><span class="statlbl">KG SINCE ' + fmtDate(ds[0]).toUpperCase() + '</span></div></div>';
+      '<div><span class="bignum">' + (trend ? (Math.abs(trend.d) < 0.05 ? '0.0' : signedKg(trend.d)) : '-') + '</span><span class="statlbl">' + (trend ? 'KG, 7-DAY TREND · ' + (Math.abs(trend.d) < 0.1 ? 'STEADY' : trend.d < 0 ? 'DOWN' : 'UP') : '7-DAY TREND · NEEDS TWO WEEKS') + '</span></div></div>';
     h += '<div class="row tight"><span class="grow">This week</span><span class="meta">' + (tw.n ? fmtKg(tw.avg) + ' kg · ' + plural(tw.n, 'entry', 'entries') : 'none yet') + '</span></div>' +
       '<div class="row tight"><span class="grow">Last week</span><span class="meta">' + (lw.n ? fmtKg(lw.avg) + ' kg' : 'none recorded') + '</span></div>' +
-      (tw.n && lw.n ? '<div class="row tight"><span class="grow">Week to week</span><span class="meta">' + signedKg(tw.avg - lw.avg) + ' kg</span></div>' : '') +
-      '<div class="row tight"><span class="grow">First entry</span><span class="meta">' + fmtKg(first) + ' kg · ' + plural(ds.length, 'entry', 'entries') + '</span></div>';
+      '<div class="row tight"><span class="grow">Since the first entry</span><span class="meta">' + signedKg(now - first) + ' kg · ' + plural(ds.length, 'entry', 'entries') + '</span></div>' +
+      '<p class="dim small">The trend compares the average of the last 7 days with the 7 days before them, so single weigh-ins barely move it.</p>';
     const vals = weeks.map((x) => x.avg).filter((v) => v != null);
     if (vals.length >= 2) {
       const lo = Math.min(...vals) - 0.5, hi = Math.max(...vals) + 0.5;

@@ -5,6 +5,9 @@ URL = 'file://' + str(pathlib.Path(__file__).parent / 'dist' / 'standalone.html'
 SH = '/tmp/claude-0/shots/'
 errors = []
 def click(page, sel):
+    # a spell found by chance opens a window over the screen; close it before going elsewhere
+    if sel.startswith('nav ') or sel.startswith('[data-a=openView]'):
+        while page.locator('[data-a=closeModal]').count(): page.locator('[data-a=closeModal]').first.click(); page.wait_for_timeout(60)
     loc = page.locator(sel)
     if not loc.count(): errors.append('MISSING ' + sel); return
     loc.first.click(); page.wait_for_timeout(60)
